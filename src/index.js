@@ -3,6 +3,7 @@ import process from 'node:process';
 import { Client, Events, GatewayIntentBits, MessageFlags } from 'discord.js';
 import { finalizeRecording, notifyN8n } from './finalize.js';
 import { MeetingRecorder } from './recorder.js';
+import { pruneRecordings } from './retention.js';
 import { findUnfinished, readState } from './state.js';
 
 const config = {
@@ -19,6 +20,8 @@ const client = new Client({
 // 봇이 재시작된 뒤 이 시간 안이면 끝나지 않은 회의를 이어 간다. 더 지났으면 회의가 끝났을 수 있으므로
 // 음성 채널에 다시 들어가지 않고 그때까지의 녹음으로 마무리한다.
 const RESUME_WINDOW_MS = 10 * 60_000;
+// 끝난 지 일주일이 지난 녹음은 하루 한 번 지운다.
+const PRUNE_INTERVAL_MS = 24 * 60 * 60_000;
 
 /** 서버 ID → 진행 중인 녹음 */
 const recorders = new Map();
@@ -185,6 +188,12 @@ client.once(Events.ClientReady, async (c) => {
   for (const dir of await findUnfinished(config.recordingsDir)) {
     await resumeMeeting(dir).catch((error) => console.error(`회의 이어 가기 실패 ${dir}:`, error));
   }
+  const prune = () =>
+    pruneRecordings(config.recordingsDir)
+      .then((removed) => removed.length && console.log(`보관 기간이 지난 녹음 ${removed.length}개를 지웠습니다: ${removed.join(', ')}`))
+      .catch((error) => console.error('녹음 정리 실패:', error));
+  await prune();
+  setInterval(prune, PRUNE_INTERVAL_MS).unref();
 });
 client.on(Events.Error, console.error);
 
