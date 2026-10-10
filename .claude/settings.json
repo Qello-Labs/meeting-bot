@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./secrets/**)",
+      "Read(./recordings/**)",
+      "Bash(docker compose down -v:*)",
+      "Bash(docker compose down --volumes:*)",
+      "Bash(docker volume rm:*)",
+      "Bash(docker volume prune:*)"
+    ]
+  }
+}
