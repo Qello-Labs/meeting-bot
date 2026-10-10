@@ -1,0 +1,253 @@
+{
+  "id": "MeetingTranscribe",
+  "name": "회의 녹취",
+  "active": false,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "meeting-ended",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "name": "회의 종료",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "webhookId": "a6780d36-8ae8-42d3-83b7-9d7a0d6f8dbc",
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 녹음 봇이 보낸 manifest를 확인한다. 회의 ID, 파일 이름, 서버·채널 ID는 파일 경로와 Discord 요청에 들어가므로 형식이 맞는 것만 받는다.\n// 틀리면 실행을 실패시켜 조용히 끝나지 않게 한다. 오류 메시지에는 값을 넣지 않는다(참석자 ID가 실행 기록에 남지 않게).\nconst manifest = $input.first().json.body;\nconst errors = [];\nconst isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);\nconst isMs = (value) => Number.isFinite(value) && value >= 0;\n\nif (!isObject(manifest)) throw new Error('manifest가 JSON 객체가 아닙니다');\nif (!/^\\d{8}-\\d{4}$/.test(manifest.meetingId ?? '')) errors.push('meetingId 형식이 다릅니다');\nif (!/^\\d{17,20}$/.test(manifest.guildId ?? '')) errors.push('guildId 형식이 다릅니다');\nif (!/^\\d{17,20}$/.test(manifest.textChannelId ?? '')) errors.push('textChannelId 형식이 다릅니다');\nfor (const key of ['startedAt', 'endedAt']) {\n  if (typeof manifest[key] !== 'string' || Number.isNaN(Date.parse(manifest[key]))) errors.push(`${key}가 시각이 아닙니다`);\n}\n\nconst participants = Array.isArray(manifest.participants) ? manifest.participants : [];\nif (!Array.isArray(manifest.participants)) errors.push('participants가 배열이 아닙니다');\n\nconst segments = Array.isArray(manifest.segments) ? manifest.segments : [];\nif (!Array.isArray(manifest.segments)) errors.push('segments가 배열이 아닙니다');\nelse if (segments.length === 0) errors.push('녹음된 발화가 없습니다');\nconst files = new Set();\nsegments.forEach((s, i) => {\n  if (!/^\\d{9}-\\d+\\.webm$/.test(s?.file ?? '')) errors.push(`segments[${i}].file 형식이 다릅니다`);\n  else if (files.has(s.file)) errors.push(`segments[${i}].file이 중복됩니다`);\n  else files.add(s.file);\n  if (!isMs(s?.startMs) || !isMs(s?.endMs) || s.endMs < s.startMs) errors.push(`segments[${i}] 시각이 잘못됐습니다`);\n});\n\nconst gaps = manifest.gaps ?? [];\nif (!Array.isArray(gaps)) errors.push('gaps가 배열이 아닙니다');\nelse gaps.forEach((g, i) => {\n  if (!isMs(g?.startMs) || (g.endMs !== undefined && (!isMs(g.endMs) || g.endMs < g.startMs))) {\n    errors.push(`gaps[${i}] 시각이 잘못됐습니다`);\n  }\n});\n\nif (errors.length > 0) throw new Error(`manifest를 처리할 수 없습니다: ${errors.join(', ')}`);\n\n// 녹음 봇은 서버 멤버 정보를 못 읽으면 표시 이름 자리에 Discord ID를 넣는다.\n// ID가 녹취와 OpenAI 프롬프트에 들어가지 않게 \"참석자 N\"으로 바꾼다.\nconst names = new Map();\nconst nameOf = (userId, displayName) => {\n  if (names.has(userId)) return names.get(userId);\n  const usable = typeof displayName === 'string' && displayName.trim() !== '' && !/^\\d{17,20}$/.test(displayName.trim());\n  const name = usable ? displayName.trim() : `참석자 ${names.size + 1}`;\n  names.set(userId, name);\n  return name;\n};\nparticipants.forEach((p) => nameOf(p?.userId, p?.displayName));\n\nreturn [{\n  json: {\n    meetingId: manifest.meetingId,\n    guildId: manifest.guildId,\n    textChannelId: manifest.textChannelId,\n    startedAt: manifest.startedAt,\n    endedAt: manifest.endedAt,\n    // 참석자 이름을 알려 주면 음성 인식이 이름을 덜 틀린다.\n    prompt: names.size > 0 ? `참석자: ${[...new Set(names.values())].join(', ')}` : '',\n    segments: segments.map((s) => ({\n      file: s.file,\n      startMs: s.startMs,\n      endMs: s.endMs,\n      speaker: nameOf(s.userId, s.displayName),\n    })),\n    gaps: gaps.map((g) => ({ startMs: g.startMs, endMs: g.endMs ?? null, reason: typeof g.reason === 'string' ? g.reason : '' })),\n  },\n}];\n"
+      },
+      "name": "녹음 정보 확인",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 발화마다 항목 하나를 만들어 파일 읽기 노드에 넘긴다. 파일 이름은 앞 노드에서 형식을 확인했다.\nconst { meetingId, segments } = $('녹음 정보 확인').first().json;\nreturn segments.map((segment) => ({\n  json: { file: segment.file, path: `/recordings/${meetingId}/segments/${segment.file}` },\n}));\n"
+      },
+      "name": "발화 목록",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "read",
+        "fileSelector": "={{ $json.path }}",
+        "options": {
+          "dataPropertyName": "data"
+        }
+      },
+      "name": "발화 파일 읽기",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "alwaysOutputData": true,
+      "position": [
+        720,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 파일 읽기 노드는 경로를 glob으로 찾아서, 파일이 없으면 오류 없이 항목 0개를 낸다(n8n 2.42.6에서 확인).\n// 그대로 두면 워크플로가 조용히 성공으로 끝나므로 읽은 파일이 발화 목록과 하나라도 다르면 실패시킨다.\nconst expected = $('발화 목록').all().map((item) => item.json.file);\nconst files = $input.all().filter((item) => item.binary?.data);\nif (files.length !== expected.length) {\n  throw new Error(`발화 파일 ${expected.length}개 중 ${files.length}개만 읽었습니다. 녹음 폴더를 확인해 주세요`);\n}\n// 음성 인식 결과를 발화 순서로 맞추므로 읽은 순서도 같아야 한다.\nconst misplaced = files.findIndex((item, i) => item.binary.data.fileName !== expected[i]);\nif (misplaced !== -1) throw new Error(`${misplaced + 1}번째 발화 파일이 발화 목록과 다릅니다`);\nreturn files;\n"
+      },
+      "name": "발화 파일 확인",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/audio/transcriptions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            },
+            {
+              "name": "model",
+              "value": "gpt-4o-transcribe"
+            },
+            {
+              "name": "language",
+              "value": "ko"
+            },
+            {
+              "name": "response_format",
+              "value": "json"
+            },
+            {
+              "name": "prompt",
+              "value": "={{ $('녹음 정보 확인').first().json.prompt }}"
+            }
+          ]
+        },
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 5,
+              "batchInterval": 500
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "name": "음성 인식",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "position": [
+        1200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 음성 인식 결과를 회의 시작 기준 시각 순 녹취로 합친다. 이 [HH:MM:SS] 문자열이 이후 단계에서 녹취 근거의 식별자가 된다.\n// 녹취 원문은 이 노드 출력(n8n 실행 기록, 7일 보관)에만 남기고 Discord에는 발화 수만 알린다.\nconst meeting = $('녹음 정보 확인').first().json;\nconst texts = $input.all().map((item) => item.json.text);\nif (texts.length !== meeting.segments.length) {\n  throw new Error(`음성 인식 결과 수(${texts.length})가 발화 수(${meeting.segments.length})와 다릅니다`);\n}\n\nconst pad = (n) => String(n).padStart(2, '0');\nconst clock = (ms) => {\n  const s = Math.floor(ms / 1000);\n  return `${pad(Math.floor(s / 3600))}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;\n};\n\nconst lines = [];\nlet empty = 0;\nmeeting.segments.forEach((segment, i) => {\n  const text = typeof texts[i] === 'string' ? texts[i].replace(/\\s+/g, ' ').trim() : '';\n  if (text === '') {\n    empty += 1;\n    return;\n  }\n  lines.push({ ms: segment.startMs, order: 1, text: `[${clock(segment.startMs)}] ${segment.speaker}: ${text}` });\n});\n// 녹음이 끊긴 구간도 시각 순으로 끼워 넣는다. 그 사이의 말은 녹음되지 않았다.\nfor (const gap of meeting.gaps) {\n  const length = gap.endMs === null ? '회의 끝까지' : `약 ${Math.round((gap.endMs - gap.startMs) / 1000)}초`;\n  const reason = gap.reason ? `, ${gap.reason}` : '';\n  lines.push({ ms: gap.startMs, order: 0, text: `[${clock(gap.startMs)}] (녹음 끊김 ${length}${reason})` });\n}\nlines.sort((a, b) => a.ms - b.ms || a.order - b.order);\n\nconst segmentCount = meeting.segments.length;\nreturn [{\n  json: {\n    meetingId: meeting.meetingId,\n    guildId: meeting.guildId,\n    textChannelId: meeting.textChannelId,\n    transcript: lines.map((line) => line.text).join('\\n'),\n    segmentCount,\n    emptyCount: empty,\n    notice: `회의 ${meeting.meetingId} 녹취 완료, 발화 ${segmentCount}개`,\n  },\n}];\n"
+      },
+      "name": "녹취 만들기",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "botToken",
+        "resource": "message",
+        "operation": "send",
+        "guildId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.guildId }}"
+        },
+        "sendTo": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $json.textChannelId }}"
+        },
+        "content": "={{ $json.notice }}",
+        "options": {}
+      },
+      "name": "회의 채널 알림",
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "회의 종료": {
+      "main": [
+        [
+          {
+            "node": "녹음 정보 확인",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "녹음 정보 확인": {
+      "main": [
+        [
+          {
+            "node": "발화 목록",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "발화 목록": {
+      "main": [
+        [
+          {
+            "node": "발화 파일 읽기",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "발화 파일 읽기": {
+      "main": [
+        [
+          {
+            "node": "발화 파일 확인",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "발화 파일 확인": {
+      "main": [
+        [
+          {
+            "node": "음성 인식",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "음성 인식": {
+      "main": [
+        [
+          {
+            "node": "녹취 만들기",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "녹취 만들기": {
+      "main": [
+        [
+          {
+            "node": "회의 채널 알림",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true
+  },
+  "pinData": {}
+}
