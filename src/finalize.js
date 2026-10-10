@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { statePath } from './state.js';
 
 const run = promisify(execFile);
 
@@ -18,6 +19,7 @@ async function toWebm(oggPath) {
 
 /**
  * 짧은 발화(맞장구, 기침)를 버리고 webm으로 바꾼 뒤 manifest.json을 쓴다.
+ * manifest를 쓰면 회의가 끝난 것이므로 재시작 때 이어 가지 않도록 상태 파일을 지운다.
  */
 export async function finalizeRecording(result, { minSegmentMs }) {
   const segmentsDir = path.join(result.dir, 'segments');
@@ -49,6 +51,7 @@ export async function finalizeRecording(result, { minSegmentMs }) {
   const manifest = { ...result, segments: kept };
   delete manifest.dir;
   await writeFile(path.join(result.dir, 'manifest.json'), JSON.stringify(manifest, null, 2));
+  await rm(statePath(result.dir), { force: true });
   return { manifest, dropped };
 }
 
