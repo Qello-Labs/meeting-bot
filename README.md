@@ -62,7 +62,11 @@ recordings/20261013-1400/
 - 발화는 1초 동안 조용하면 끝난 것으로 보고, `MIN_SEGMENT_MS`(기본 700ms)보다 짧은 발화는 버린다.
 - OpenAI 음성 인식은 ogg를 받지 않아서 Opus를 다시 인코딩하지 않고 webm으로만 옮긴다.
 - 종료할 때는 진행 중인 발화를 끝까지 쓴 뒤 음성 연결을 끊는다. 연결부터 끊으면 라이브러리가 스트림을 닫아 마지막 조각이 잘릴 수 있다.
-- 연결이 끊기거나 봇을 끌 때도 그때까지의 녹음을 마무리한다.
+- 회의 하나는 `/회의녹음 시작`부터 `/회의녹음 종료`까지 이어진다. 봇의 음성 연결이 끊기면 종료 명령을 받을 때까지 같은 회의로 다시 들어가고,
+  끊긴 구간을 manifest `gaps`에 남긴다. 음성 채널이 삭제된 경우에만 그때까지의 녹음으로 회의를 끝낸다.
+- 회의 중에는 녹음 폴더에 `state.json`을 남긴다. 봇이 재시작되면 10분 안이면 같은 회의로 이어 가고, 더 지났으면 그때까지의 녹음으로 마무리한다.
+  manifest를 쓰면 `state.json`은 지운다.
+- Ctrl+C로 봇을 끄면 그때까지의 녹음으로 회의를 마무리한다.
 - 음성 연결이 준비될 때와 참석자가 바뀔 때 콘솔에 `DAVE 프로토콜 v<버전>`을 남긴다. 0이면 암호화 세션이 없다.
 
 ### 알아 둘 점
@@ -75,12 +79,13 @@ recordings/20261013-1400/
 ### 확인하기
 
 ```bash
-node scripts/offline-test.js        # ffmpeg 필요
+npm test                            # ffmpeg 필요
 docker build -t meeting-bot .
-docker run --rm meeting-bot node scripts/offline-test.js
+docker run --rm meeting-bot npm test
 ```
 
-오프라인 테스트는 ffmpeg로 만든 Opus 패킷을 실제 수신 스트림에 넣어 녹음, 강제 종료, webm 변환, manifest 작성까지 확인한다.
+오프라인 테스트는 ffmpeg로 만든 Opus 패킷을 실제 수신 스트림에 넣는다. `offline-test.js`는 녹음, 강제 종료, webm 변환, manifest 작성을,
+`offline-reconnect-test.js`는 연결 끊김 뒤 재접속, 채널 이동, 채널 삭제, 봇 재시작 뒤 이어 가기를 가짜 음성 연결로 확인한다.
 CI도 같은 테스트를 돌린다.
 
 ## 작업 흐름
