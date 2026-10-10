@@ -10,6 +10,8 @@ Discord 회의를 말하는 사람별로 녹음하고, n8n 워크플로가 음�
 | [docs/harness/OVERVIEW.md](docs/harness/OVERVIEW.md) | 하네스 구성, 출처, 다음 단계 |
 | [templates/](templates) | 작업 계약(`TASK.md`), 결정 기록 양식 |
 | [docs/design/meeting-notes.md](docs/design/meeting-notes.md) | 회의록 자동화 설계 |
+| [docs/decisions/](docs/decisions) | 결정 기록 |
+| [workflows/README.md](workflows/README.md) | n8n 워크플로 빌드, 가져오기, 차이 검사, E2E |
 
 ## 녹음 봇
 
@@ -104,15 +106,17 @@ recordings/20261013-1400/
 ### 확인하기
 
 ```bash
-npm test                            # ffmpeg 필요
+npm test                                   # 녹음 봇 + 워크플로 오프라인 테스트. ffmpeg 필요
 docker build -t meeting-bot .
-docker run --rm meeting-bot npm test
+docker run --rm meeting-bot npm run test:recorder   # 이미지에는 workflows/가 없어 녹음 봇 테스트만 돈다
+npm run e2e:n8n                            # 실제 n8n + 가짜 OpenAI·Discord. Docker와 openssl 필요, 비용 없음
 ```
 
 오프라인 테스트는 ffmpeg로 만든 Opus 패킷을 실제 수신 스트림에 넣는다. `offline-test.js`는 녹음, 강제 종료, webm 변환, manifest 작성을,
 `offline-reconnect-test.js`는 연결 끊김 뒤 재접속, 채널 이동, 채널 삭제, 봇 재시작 뒤 이어 가기를 가짜 음성 연결로,
-`offline-retention-test.js`는 보관 기간이 지난 회의 폴더만 지우는지를 확인한다.
-CI도 같은 테스트를 돌린다.
+`offline-retention-test.js`는 보관 기간이 지난 회의 폴더만 지우는지를,
+`offline-workflow-test.js`는 n8n 워크플로의 Code 노드, 차이 검사, 커밋된 워크플로 JSON이 코드와 같은지를 확인한다.
+CI는 `npm test`를 돌린다. `npm run e2e:n8n`은 Docker가 필요해 CI에 넣지 않았다.
 
 ## 작업 흐름
 
