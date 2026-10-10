@@ -1,0 +1,46 @@
+# Oracle Always Free(Ampere A1)에서 녹음 봇과 n8n을 함께 띄운다.
+#   docker compose up -d --build
+# n8n 편집 화면은 SSH 포트 포워딩으로만 연다: ssh -L 5678:localhost:5678 <서버>
+services:
+  recorder:
+    build: .
+    restart: unless-stopped
+    # .env의 다른 값이 봇 컨테이너에 들어가지 않게 필요한 값만 넘긴다.
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - MIN_SEGMENT_MS=${MIN_SEGMENT_MS:-700}
+      - RECORDINGS_DIR=/recordings
+      - MEETING_ENDED_WEBHOOK_URL=http://n8n:5678/webhook/meeting-ended
+      # 회의 폴더 이름(YYYYMMDD-HHMM)을 한국 시각으로 만든다. manifest 안의 시각은 ISO 형식이라 영향이 없다.
+      - TZ=Asia/Seoul
+    volumes:
+      - recordings:/recordings
+    depends_on:
+      - n8n
+
+  n8n:
+    # 이 버전에서 동작을 확인한다. 올릴 때는 워크플로를 다시 확인한다.
+    image: docker.n8n.io/n8nio/n8n:2.42.6
+    restart: unless-stopped
+    # 서버의 127.0.0.1에만 연다. 밖에서는 SSH 포트 포워딩으로만 들어온다.
+    ports:
+      - "127.0.0.1:5678:5678"
+    environment:
+      - GENERIC_TIMEZONE=Asia/Seoul
+      - TZ=Asia/Seoul
+      # n8n이 자격 증명을 이 키로 암호화한다. 다른 서버에서 n8n 데이터를 복원하려면 같은 키가 있어야 한다.
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?N8N_ENCRYPTION_KEY를 .env에 넣어 주세요}
+      # 파일 읽기 노드가 녹음 폴더만 읽게 한다.
+      - N8N_RESTRICT_FILE_ACCESS_TO=/recordings
+      # 실행 기록은 일주일(168시간) 보관한다. n8n 2.42.6 기본값은 336시간이다.
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=168
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - recordings:/recordings:ro
+      # 저장소의 워크플로 JSON. n8n import:workflow로 가져올 때만 읽는다.
+      - ./workflows:/workflows:ro
+
+volumes:
+  n8n_data:
+  recordings:
