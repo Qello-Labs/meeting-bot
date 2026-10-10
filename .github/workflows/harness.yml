@@ -38,9 +38,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Discord 없이 녹음, 강제 종료, webm 변환, manifest 작성을 확인한다.
-      - name: Run recorder offline test
-        run: node scripts/offline-test.js
+      # Discord 없이 녹음, 강제 종료, webm 변환, manifest 작성과 연결 끊김, 채널 이동, 채널 삭제, 재시작 이어 가기를 확인한다.
+      - name: Run recorder offline tests
+        run: npm test
 
       - name: Check whitespace errors in the PR diff
         if: github.event_name == 'pull_request'
