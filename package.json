@@ -10,7 +10,7 @@
   "scripts": {
     "deploy-commands": "node --env-file=.env src/deploy-commands.js",
     "start": "node --env-file=.env src/index.js",
-    "test": "node scripts/offline-test.js && node scripts/offline-reconnect-test.js"
+    "test": "node scripts/offline-test.js && node scripts/offline-reconnect-test.js && node scripts/offline-retention-test.js"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
