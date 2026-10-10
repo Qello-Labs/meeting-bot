@@ -1,0 +1,28 @@
+# 비밀값·로컬 환경
+.env
+.env.*
+!.env.example
+secrets/
+
+# 녹음 원본과 녹취 결과. 서버 volume에만 둔다(AGENTS.md 3.1).
+recordings/
+
+# Node
+node_modules/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Claude Code 개인 설정. 팀 공용 .claude/settings.json과 .claude/skills/는 커밋한다.
+.claude/settings.local.json
+CLAUDE.local.md
+
+# 에디터·OS
+.idea/
+.vscode/
+.DS_Store
+
+# 로그
+*.log

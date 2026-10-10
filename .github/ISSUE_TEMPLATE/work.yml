@@ -1,0 +1,105 @@
+name: Meeting Bot 작업
+description: 미팅봇 구현·운영·조사 작업의 범위, 완료 조건, 검증 증거를 기록합니다.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        제목은 이 작업으로 끝낼 산출물을 한 줄로 씁니다. 예: 회의 종료 시 manifest를 n8n에 전송
+        녹음 파일, 녹취 원문, 참석자 Discord ID, 토큰, 서버 주소는 이 Issue에 쓰지 않습니다.
+        Issue 번호는 브랜치 `<type>/gh-<번호>-<short-slug>`와 커밋 끝 `(#번호)`에 씁니다.
+
+  - type: dropdown
+    id: work_type
+    attributes:
+      label: 작업 종류
+      description: 브랜치와 커밋의 type과 맞춥니다.
+      options:
+        - feature
+        - bug
+        - ops
+        - tech-debt
+        - research
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 영역
+      multiple: true
+      options:
+        - recorder (Discord 녹음 봇)
+        - n8n 워크플로
+        - 서버·배포
+        - 하네스·문서
+    validations:
+      required: true
+
+  - type: textarea
+    id: deliverable
+    attributes:
+      label: 산출물·구현 범위
+      description: 관찰할 산출물과 필요한 이유, 제외 범위를 씁니다.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: 완료 조건·검증 방법
+      description: 관찰할 결과 1~3개와 검증 방법을 씁니다. 오프라인 테스트로 확인할지 실제 회의로 확인할지 구분합니다.
+      placeholder: |
+        - [ ] 관찰할 결과 1 — 검증 방법:
+        - [ ] 관찰할 결과 2 — 검증 방법:
+    validations:
+      required: true
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: 데이터·외부 서비스·비용 영향
+      description: 해당하는 변경만 씁니다. 영향이 없으면 해당 없음으로 남깁니다.
+      value: |
+        녹음·녹취 데이터 처리: 해당 없음
+        외부 API 전송(음성 인식, 생성 모델): 해당 없음
+        외부 서비스 쓰기(ClickUp, Discord): 해당 없음
+        서버·n8n 설정: 해당 없음
+        API 호출량·비용: 해당 없음
+    validations:
+      required: true
+
+  - type: textarea
+    id: related_links
+    attributes:
+      label: 관련 작업·결정 기록·PR
+      value: |
+        관련 ClickUp 작업·회의록: 해당 없음
+        결정 기록: 해당 없음
+        GitHub PR: 미정
+    validations:
+      required: true
+
+  - type: textarea
+    id: verification_evidence
+    attributes:
+      label: 검증 결과·증빙
+      description: 실행 후 명령, 환경, 실제 결과를 갱신합니다. 오프라인 테스트, 계산·추정, 실제 운영 결과를 구분합니다.
+      value: 미실행
+    validations:
+      required: true
+
+  - type: textarea
+    id: blockers
+    attributes:
+      label: 의존성·막힘
+      value: 해당 없음
+
+  - type: checkboxes
+    id: review
+    attributes:
+      label: 작성 확인
+      options:
+        - label: 완료 조건에 관찰 가능한 결과와 검증 방법을 기록했습니다.
+          required: true
+        - label: 녹음 파일, 녹취 원문, 참석자 ID, 토큰, 서버 주소를 이 Issue에 넣지 않았습니다.
+          required: true
