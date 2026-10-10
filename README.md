@@ -44,8 +44,32 @@ npm run deploy-commands   # /회의녹음 명령 등록. 한 번만 하면 된�
 npm start
 ```
 
-n8n 없이 녹음만 확인할 때는 `.env`의 `MEETING_ENDED_WEBHOOK_URL`을 비워 둔다. 서버에서 n8n과 함께 띄우는 방법은
-설계 문서 9절의 compose 보완 단계에서 추가한다.
+n8n 없이 녹음만 확인할 때는 `.env`의 `MEETING_ENDED_WEBHOOK_URL`을 비워 둔다.
+
+### 서버에서 실행 (녹음 봇 + n8n)
+
+Oracle Cloud Always Free의 Ampere A1(arm64)을 쓴다. Always Free는 홈 리전에서만 쓸 수 있고 A1은 춘천에서 만들 수 없어
+홈 리전을 서울로 고른다. 인바운드 포트는 SSH만 연다.
+
+```bash
+git clone <저장소> && cd meeting-bot
+cp .env.example .env
+# .env에 DISCORD_TOKEN과 N8N_ENCRYPTION_KEY=<openssl rand -hex 32 결과>를 넣는다
+docker compose up -d --build
+```
+
+| 항목 | 설정 |
+| --- | --- |
+| n8n 접근 | 서버의 `127.0.0.1:5678`에만 열린다. 내 PC에서 `ssh -L 5678:localhost:5678 <서버>` 후 `http://localhost:5678` |
+| `N8N_ENCRYPTION_KEY` | 없으면 compose가 시작하지 않는다. n8n이 자격 증명을 이 키로 암호화하므로 서버 밖에도 보관한다. 잃으면 다른 서버로 옮길 때 자격 증명을 다시 등록해야 한다 |
+| 녹음 | `recordings` volume. 녹음 봇은 쓰고 n8n은 읽기만 한다. n8n 파일 읽기는 `/recordings`로 제한한다 |
+| 보관 | 녹음은 끝난 지 7일 뒤 녹음 봇이 지우고(켜질 때와 하루 한 번), n8n 실행 기록은 7일 뒤 n8n이 지운다 |
+| 재시작 | 두 컨테이너 모두 `restart: unless-stopped`. 회의 중 재시작되면 10분 안이면 같은 회의로 이어 간다 |
+| 시간대 | 녹음 봇과 n8n 모두 `Asia/Seoul`. 회의 폴더 이름이 한국 시각이 된다 |
+| 워크플로 | 저장소 `workflows/`가 n8n의 `/workflows`에 읽기 전용으로 연결된다. 가져오는 방법은 [workflows/README.md](workflows/README.md) |
+
+n8n 편집 화면을 처음 열면 관리자 계정을 만든다. n8n 2.42.6은 로그인 쿠키를 HTTPS에서만 보내지만 Chrome은 `http://localhost`를
+안전한 주소로 보기 때문에 SSH 포트 포워딩으로도 로그인된다(Chrome에서 확인).
 
 ### 결과물
 
@@ -66,6 +90,7 @@ recordings/20261013-1400/
   끊긴 구간을 manifest `gaps`에 남긴다. 음성 채널이 삭제된 경우에만 그때까지의 녹음으로 회의를 끝낸다.
 - 회의 중에는 녹음 폴더에 `state.json`을 남긴다. 봇이 재시작되면 10분 안이면 같은 회의로 이어 가고, 더 지났으면 그때까지의 녹음으로 마무리한다.
   manifest를 쓰면 `state.json`은 지운다.
+- 봇이 켜질 때와 하루 한 번, 끝난 지 7일이 지난 회의 폴더를 지운다. 끝나지 않은 회의(`state.json`이 있는 폴더)와 회의 ID 형식이 아닌 폴더는 지우지 않는다.
 - Ctrl+C로 봇을 끄면 그때까지의 녹음으로 회의를 마무리한다.
 - 음성 연결이 준비될 때와 참석자가 바뀔 때 콘솔에 `DAVE 프로토콜 v<버전>`을 남긴다. 0이면 암호화 세션이 없다.
 
@@ -85,7 +110,8 @@ docker run --rm meeting-bot npm test
 ```
 
 오프라인 테스트는 ffmpeg로 만든 Opus 패킷을 실제 수신 스트림에 넣는다. `offline-test.js`는 녹음, 강제 종료, webm 변환, manifest 작성을,
-`offline-reconnect-test.js`는 연결 끊김 뒤 재접속, 채널 이동, 채널 삭제, 봇 재시작 뒤 이어 가기를 가짜 음성 연결로 확인한다.
+`offline-reconnect-test.js`는 연결 끊김 뒤 재접속, 채널 이동, 채널 삭제, 봇 재시작 뒤 이어 가기를 가짜 음성 연결로,
+`offline-retention-test.js`는 보관 기간이 지난 회의 폴더만 지우는지를 확인한다.
 CI도 같은 테스트를 돌린다.
 
 ## 작업 흐름
