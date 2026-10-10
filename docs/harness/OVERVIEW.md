@@ -16,7 +16,7 @@ AI 에이전트로 미팅봇을 만들 때 작업 범위, 검증 증거, 녹음 
 | 증거 양식 | `templates/*`, PR 템플릿, Issue 폼 | 가이드 | 템플릿 |
 | 기계 검사 | `scripts/preflight.py` — `.env`·녹음 파일 추적, 토큰·Webhook URL 패턴 검사 | 센서 | 로컬 수동 실행 + CI |
 | 읽기·명령 차단 | `.claude/settings.json` deny — `.env`, `secrets/`, `recordings/` 읽기, Docker volume 삭제 | 센서 | Claude Code가 자동 적용 |
-| CI | `.github/workflows/harness.yml` — PR과 `main` push에서 preflight, PR diff 공백 검사 | 센서 | GitHub Actions |
+| CI | `.github/workflows/harness.yml` — PR과 `main` push에서 preflight, 녹음 봇 오프라인 테스트, PR diff 공백 검사 | 센서 | GitHub Actions |
 | 강제 장치 | `main` 브랜치 보호 규칙(필수 검사 `Harness / checks`) | 센서 | 없음. GitHub 설정에서 사람이 켠다 |
 
 브랜치 보호 규칙을 켜기 전에는 CI가 실패해도 병합을 막지 못한다.
@@ -59,6 +59,5 @@ Skill 이름을 `harness-*`에서 `mb-*`로 바꾼 이유: Claude Code는 같은
 ## 다음 단계
 
 1. GitHub 저장소 설정에서 `main` 브랜치 보호 규칙을 켜고 필수 검사로 `Harness / checks`를 지정한다.
-2. 봇 코드가 들어오면 CI에 Node 설치와 `node scripts/offline-test.js`(ffmpeg 필요) 단계를 추가한다.
-3. n8n 워크플로 JSON이 들어오면 자격 증명 값·Webhook 경로 검사를 preflight에 추가한다.
-4. `TASK.md` Ownership 경로와 실제 변경 파일을 비교하는 검사.
+2. n8n 워크플로 JSON이 들어오면 자격 증명 값·Webhook 경로 검사를 preflight에 추가한다.
+3. `TASK.md` Ownership 경로와 실제 변경 파일을 비교하는 검사.

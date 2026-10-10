@@ -26,6 +26,22 @@ jobs:
       - name: Scan files for secrets and recordings without printing values
         run: python scripts/preflight.py
 
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install ffmpeg for the recorder offline test
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Discord 없이 녹음, 강제 종료, webm 변환, manifest 작성을 확인한다.
+      - name: Run recorder offline test
+        run: node scripts/offline-test.js
+
       - name: Check whitespace errors in the PR diff
         if: github.event_name == 'pull_request'
         run: git diff --check "origin/${{ github.base_ref }}...HEAD"
