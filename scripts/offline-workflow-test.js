@@ -8,8 +8,8 @@ import { diffWorkflows, pickWorkflow } from './diff-workflow.js';
 const workflow = await buildWorkflow();
 const AsyncFunction = (async () => {}).constructor;
 
-/** n8n Code 노드와 같은 이름($input, $)으로 노드 코드를 실행한다. */
-function harness() {
+/** n8n Code 노드와 같은 이름($input, $, $getWorkflowStaticData)으로 노드 코드를 실행한다. */
+function harness(staticData = {}) {
   const outputs = new Map();
   const items = (name) => {
     if (!outputs.has(name)) throw new Error(`${name} 노드 출력이 없습니다`);
@@ -22,8 +22,8 @@ function harness() {
     },
     async code(name, input) {
       const node = workflow.nodes.find((n) => n.name === name);
-      const fn = new AsyncFunction('$input', '$', node.parameters.jsCode);
-      const result = await fn(ref(input), ref);
+      const fn = new AsyncFunction('$input', '$', '$getWorkflowStaticData', node.parameters.jsCode);
+      const result = await fn(ref(input), ref, () => staticData);
       outputs.set(name, result);
       return result;
     },
@@ -93,7 +93,6 @@ async function runUntilFiles(h, body) {
   assert.equal(result.json.emptyCount, 1);
   assert.equal(result.json.textChannelId, CHANNEL);
   assert.equal(result.json.guildId, manifest.guildId);
-  assert.equal(result.json.notice, '회의 20261014-1400 녹취 완료, 발화 4개');
   assert.ok(!result.json.transcript.includes('400000000000000002'), '녹취에 Discord ID가 들어가지 않는다');
 }
 
@@ -160,10 +159,14 @@ for (const [label, body, expected] of [
   assert.equal(nodeOf('음성 인식').type, 'n8n-nodes-base.httpRequest');
   assert.ok(nodeOf('음성 인식').parameters.bodyParameters.parameters.some((p) => p.name === 'model' && p.value === 'gpt-4o-transcribe'));
   assert.equal(nodeOf('회의 채널 알림').type, 'n8n-nodes-base.discord');
-  assert.deepEqual(workflow.nodes.map(credentialTypeOf).filter(Boolean), ['openAiApi', 'discordBotApi']);
+  assert.deepEqual(workflow.nodes.map(credentialTypeOf).filter(Boolean), ['discordBotApi', 'openAiApi', 'discordBotApi']);
   assert.deepEqual(
     workflow.nodes.map((n) => n.name),
-    ['회의 종료', '녹음 정보 확인', '발화 목록', '발화 파일 읽기', '발화 파일 확인', '음성 인식', '녹취 만들기', '회의 채널 알림'],
+    [
+      '회의 종료', '녹음 정보 확인', '발화 목록', '발화 파일 읽기', '발화 파일 확인',
+      '결정 메시지 기간', '결정 메시지 조회', '결정 메시지 고르기', '음성 인식', '녹취 만들기',
+      '녹취·결정 합치기', '알림 만들기', '회의 채널 알림',
+    ],
   );
 }
 
@@ -175,7 +178,7 @@ for (const [label, body, expected] of [
     copy.versionId = '11111111-2222-3333-4444-555555555555';
     copy.nodes.forEach((node, i) => {
       node.id = `node-${i}`;
-      node.position = [i * 300 + 17, 120];
+      node.position = [node.position[0] + 17 * i, node.position[1] + 120]; // 갈래의 위아래 순서는 유지한다
       node.webhookId = node.webhookId ? 'ffffffff-0000-0000-0000-000000000000' : undefined;
       const type = credentialTypeOf(node);
       if (type) node.credentials = { [type]: { id: 'cred1', name: '화면에서 고른 자격 증명' } };
@@ -193,8 +196,21 @@ for (const [label, body, expected] of [
     delete node(c, '회의 종료').parameters.responseMode;
     delete node(c, '발화 파일 읽기').parameters.operation;
     for (const key of ['authentication', 'operation', 'sendTo']) delete node(c, '회의 채널 알림').parameters[key];
+    // 결정 메시지 조회(HTTP GET)와 합치기(Merge): 안쪽 설정과 배열 항목 안의 기본값도 빠진다(n8n 2.42.6 화면 저장에서 확인).
+    const fetch = node(c, '결정 메시지 조회').parameters;
+    delete fetch.method;
+    delete fetch.options.pagination.pagination.paginationMode;
+    for (const p of fetch.options.pagination.pagination.parameters.parameters) delete p.type;
+    delete node(c, '녹취·결정 합치기').parameters.chooseBranchMode;
   });
   assert.deepEqual(diffWorkflows(workflow, savedInEditor), []);
+  // 안쪽 설정을 바꾸면 차이다.
+  assert.deepEqual(
+    diffWorkflows(workflow, exportOf((c) => {
+      node(c, '결정 메시지 조회').parameters.options.pagination.pagination.parameters.parameters[0].type = 'body';
+    })).slice(0, 1),
+    ['~ 결정 메시지 조회'],
+  );
   // 기본값이 아닌 값으로 바꾸면 차이다.
   assert.deepEqual(
     diffWorkflows(workflow, exportOf((c) => {
@@ -224,13 +240,13 @@ for (const [label, body, expected] of [
 
   const renamed = diffWorkflows(workflow, exportOf((c) => {
     node(c, '회의 채널 알림').name = '알림';
-    c.connections['녹취 만들기'].main[0][0].node = '알림';
+    c.connections['알림 만들기'].main[0][0].node = '알림';
   }));
   assert.deepEqual(renamed, [
     '- 노드 없음(이름이 바뀌었거나 지워짐): 회의 채널 알림',
     '+ 저장소에 없는 노드: 알림',
-    '- 연결 없음: 녹취 만들기[main 0] → 회의 채널 알림[main 0]',
-    '+ 저장소에 없는 연결: 녹취 만들기[main 0] → 알림[main 0]',
+    '- 연결 없음: 알림 만들기[main 0] → 회의 채널 알림[main 0]',
+    '+ 저장소에 없는 연결: 알림 만들기[main 0] → 알림[main 0]',
   ]);
 
   const unlinked = diffWorkflows(workflow, exportOf((c) => {
@@ -241,6 +257,187 @@ for (const [label, body, expected] of [
     '- 연결 없음: 발화 파일 읽기[main 0] → 발화 파일 확인[main 0]',
     '+ 저장소에 없는 연결: 발화 목록[main 0] → 발화 파일 확인[main 0]',
   ]);
+}
+
+// ---------------------------------------------------------------------------
+// 결정 메시지 수집(6단계). 메시지와 ID는 모두 지어낸 값이다.
+// ---------------------------------------------------------------------------
+
+const DISCORD_EPOCH = 1420070400000n;
+const DAY = 24 * 60 * 60 * 1000;
+const STARTED = Date.parse(manifest.startedAt);
+const ENDED = Date.parse(manifest.endedAt);
+let sequence = 0;
+/** ms 밀리초에 쓰인 메시지. 같은 밀리초 안에서도 ID가 겹치지 않게 순번을 붙인다. */
+const message = (ms, extra = {}) => ({
+  id: (((BigInt(ms) - DISCORD_EPOCH) << 22n) + BigInt((sequence += 1) % 4096)).toString(),
+  type: 0,
+  content: '내용',
+  author: { id: '500000000000000001', username: 'doyeon', global_name: '도연', bot: false },
+  attachments: [],
+  reactions: [{ emoji: { id: null, name: '✅' }, count: 1, me: false }],
+  ...extra,
+});
+
+/** 녹취까지 돌리고 결정 메시지 기간을 구한다. */
+async function untilPeriod(staticData = {}) {
+  const h = harness(staticData);
+  await runUntilFiles(h, manifest);
+  h.set('녹취 만들기', [{ json: { meetingId: manifest.meetingId, segmentCount: 4 } }]);
+  const [period] = await h.code('결정 메시지 기간', '녹취 만들기');
+  return { h, period: period.json };
+}
+
+async function pick(messages, staticData) {
+  const { h, period } = await untilPeriod(staticData);
+  h.set('결정 메시지 조회', messages.length ? messages.map((json) => ({ json })) : [{ json: {} }]);
+  const [result] = await h.code('결정 메시지 고르기', '결정 메시지 조회');
+  return { result: result.json, period };
+}
+
+// 기간: static data가 없으면 회의 시작 7일 전부터, 있으면 지난 회의 끝 시각부터, 이상하면 처음처럼 7일 전부터. 끝은 회의 종료.
+{
+  const idAt = (ms) => (BigInt(ms) - DISCORD_EPOCH) << 22n;
+  const first = (await untilPeriod()).period;
+  assert.equal(first.from, new Date(STARTED - 7 * DAY).toISOString());
+  assert.equal(first.to, manifest.endedAt);
+  assert.equal(first.afterId, (idAt(STARTED - 7 * DAY + 1) - 1n).toString());
+  assert.equal(first.endId, (idAt(ENDED + 1) - 1n).toString());
+  assert.equal(first.channelId, CHANNEL);
+  assert.equal(first.maxRequests, 50);
+  assert.match(first.source, /처음 실행/);
+
+  const last = new Date(STARTED - 3 * DAY).toISOString();
+  assert.equal((await untilPeriod({ lastMeetingEndedAt: last })).period.from, last);
+  for (const broken of [new Date(ENDED + 1).toISOString(), 'not-a-date', 12345]) {
+    assert.equal((await untilPeriod({ lastMeetingEndedAt: broken })).period.from, first.from, `저장값 ${broken}`);
+  }
+}
+
+// 고르기: 기간 안에 사람이 쓴 ✅ 메시지만, 오래된 순서로. 작성자 ID는 남기지 않는다.
+{
+  const keep1 = message(STARTED - 2 * DAY, { content: '배포는 금요일로 합니다' });
+  const keepReply = message(STARTED + 60_000, { type: 19, content: 'API v2로 갑니다', author: { id: '500000000000000002', username: 'minsu', global_name: null } });
+  const keepAtEnd = message(ENDED, { content: '', attachments: [{ filename: 'plan.png' }] });
+  const messages = [
+    keepReply,
+    message(STARTED - 7 * DAY, { content: '기간 시작 시각과 같은 밀리초라 빠짐' }),
+    message(ENDED + 1, { content: '회의가 끝난 뒤라 빠짐' }),
+    message(STARTED, { reactions: [], content: '반응 없음' }),
+    message(STARTED, { reactions: [{ emoji: { name: '👍' }, count: 3 }], content: '다른 반응' }),
+    message(STARTED, { reactions: [{ emoji: { name: '✅' }, count: 0 }], content: '0개' }),
+    message(STARTED, { author: { id: '600000000000000001', username: 'meeting-bot', bot: true } }),
+    message(STARTED, { webhook_id: '700000000000000001' }),
+    message(STARTED, { type: 7, content: '' }), // 입장 알림
+    keep1,
+    keepAtEnd,
+  ];
+  const { result } = await pick(messages);
+  assert.equal(result.scanned, messages.length);
+  assert.equal(result.decisionCount, 3);
+  assert.deepEqual(result.decisions.map((d) => d.link), [keep1, keepReply, keepAtEnd].map((m) => `https://discord.com/channels/${manifest.guildId}/${CHANNEL}/${m.id}`));
+  assert.deepEqual(result.decisions.map((d) => d.author), ['도연', 'minsu', '도연']);
+  assert.deepEqual(result.decisions[2].attachments, ['plan.png']);
+  assert.equal(result.decisions[0].sentAt, new Date(STARTED - 2 * DAY).toISOString());
+  assert.equal(result.textChannelId, CHANNEL);
+  assert.ok(!JSON.stringify(result).includes('500000000000000'), '작성자 ID를 남기지 않는다');
+}
+
+// ID 경계: 끝 ID와 같은 메시지는 들어가고 1 큰 메시지는 빠진다. 시작(after) ID와 같은 메시지는 빠지고 1 큰 메시지는 들어간다.
+{
+  const { period } = await untilPeriod();
+  const at = (id, content) => ({ ...message(STARTED), id, content });
+  const { result } = await pick([
+    at(period.endId, '끝 ID'),
+    at((BigInt(period.endId) + 1n).toString(), '끝 ID + 1'),
+    at(period.afterId, '시작 ID'),
+    at((BigInt(period.afterId) + 1n).toString(), '시작 ID + 1'),
+  ]);
+  assert.deepEqual(result.decisions.map((d) => d.content), ['시작 ID + 1', '끝 ID']);
+}
+
+// 받은 메시지가 없으면(alwaysOutputData의 빈 항목) 결정 메시지 0개로 알린다.
+{
+  const { result } = await pick([]);
+  assert.equal(result.scanned, 0);
+  assert.equal(result.decisionCount, 0);
+}
+
+// 조회 중 오류 응답 본문이 항목으로 들어오면 결정 메시지 0개로 넘어가지 않고 실패한다.
+await assert.rejects(pick([message(STARTED), { message: 'e2e injected failure' }]), /메시지가 아닌 항목이 1개/);
+
+// ✅가 달렸는데 내용과 첨부가 모두 없으면 Message Content Intent를 확인하라며 실패한다.
+await assert.rejects(pick([message(STARTED, { content: '' })]), /Message Content Intent/);
+
+// 요청 한도(50번, 5,000개)만큼 받았는데 회의 종료 시각에 닿지 못했으면 실패한다. 회의 종료를 넘었으면 다 받은 것이다.
+{
+  const many = Array.from({ length: 5000 }, (_, i) => message(STARTED - DAY + i, { reactions: [] }));
+  await assert.rejects(pick(many), /5000개까지 받고도 회의 종료 시각에 닿지 못했습니다/);
+  const reached = [...many.slice(1), message(ENDED + 1, { reactions: [] })];
+  assert.equal((await pick(reached)).result.decisionCount, 0);
+}
+
+// 결정 메시지 조회 노드의 페이지 넘김 식: 다음 after는 가장 큰 ID, 100개 미만이거나 회의 종료를 넘으면 멈춘다.
+{
+  const fetchNode = workflow.nodes.find((n) => n.name === '결정 메시지 조회');
+  const { pagination } = fetchNode.parameters.options.pagination;
+  assert.equal(fetchNode.alwaysOutputData, true);
+  assert.equal(pagination.maxRequests, "={{ $('결정 메시지 기간').first().json.maxRequests }}");
+  const evaluate = (expression, body, period) => {
+    const inner = expression.trim().slice(3, -2);
+    return new Function('$response', '$', `return (${inner});`)({ body }, () => ({ first: () => ({ json: period }) }));
+  };
+  const { period } = await untilPeriod();
+  const nextAfter = pagination.parameters.parameters[0].value;
+  assert.equal(evaluate(nextAfter, [{ id: '99' }, { id: '1000' }, { id: '998' }], period), '1000');
+  const page = (ms) => Array.from({ length: 100 }, (_, i) => message(ms + i, { reactions: [] }));
+  assert.equal(evaluate(pagination.completeExpression, page(STARTED), period), false, '100개를 채웠고 회의 중이면 더 받는다');
+  assert.equal(evaluate(pagination.completeExpression, page(STARTED).slice(1), period), true, '100개 미만이면 멈춘다');
+  assert.equal(evaluate(pagination.completeExpression, [], period), true, '비었으면 멈춘다');
+  assert.equal(evaluate(pagination.completeExpression, page(ENDED - 50), period), true, '회의 종료를 넘으면 멈춘다');
+  // 오류 응답(배열이 아닌 본문)에서도 식이 깨지지 않는다. 완료로 보면 n8n이 상태 코드로 오류를 올린다.
+  assert.equal(evaluate(pagination.completeExpression, { message: '오류' }, period), true);
+  assert.equal(evaluate(nextAfter, { message: '오류' }, period), period.afterId);
+  assert.equal(evaluate(nextAfter, undefined, period), period.afterId, '첫 요청 전(응답 없음)에는 기간 시작 ID');
+}
+
+// 두 갈래: 발화 파일 확인에서 결정 메시지 갈래(위)와 음성 인식 갈래(아래)로 나뉘고, 둘 다 끝나면 알림을 만든다.
+{
+  const nodeOf = (name) => workflow.nodes.find((n) => n.name === name);
+  assert.deepEqual(workflow.connections['발화 파일 확인'].main[0].map((t) => t.node), ['결정 메시지 기간', '음성 인식']);
+  // n8n은 갈래를 화면 위쪽부터 실행한다. 결정 메시지 갈래가 위라서 Discord 쪽이 실패하면 음성 인식(유료) 전에 멈춘다.
+  assert.ok(nodeOf('결정 메시지 기간').position[1] < nodeOf('음성 인식').position[1]);
+  assert.deepEqual(workflow.connections['결정 메시지 고르기'].main[0], [{ node: '녹취·결정 합치기', type: 'main', index: 0 }]);
+  assert.deepEqual(workflow.connections['녹취 만들기'].main[0], [{ node: '녹취·결정 합치기', type: 'main', index: 1 }]);
+  assert.deepEqual(nodeOf('녹취·결정 합치기').parameters, { mode: 'chooseBranch', chooseBranchMode: 'waitForAll', output: 'empty' });
+
+  // 결정 메시지 고르기는 녹취를 읽지 않는다(녹취 만들기 출력 없이 돈다).
+  const { h } = await untilPeriod();
+  const bare = harness();
+  await runUntilFiles(bare, manifest);
+  await bare.code('결정 메시지 기간', '녹음 정보 확인');
+  bare.set('결정 메시지 조회', [{ json: {} }]);
+  const [alone] = await bare.code('결정 메시지 고르기', '결정 메시지 조회');
+  assert.equal(alone.json.decisionCount, 0);
+
+  // 알림 만들기는 두 갈래 결과로 회의 ID와 숫자만 담은 문구를 만든다.
+  h.set('녹취 만들기', [{ json: { meetingId: manifest.meetingId, segmentCount: 4, transcript: '[00:00:03] 참석자 2: 원문' } }]);
+  h.set('결정 메시지 고르기', [{ json: { decisionCount: 3, decisions: [{ content: '결정 원문' }] } }]);
+  h.set('녹취·결정 합치기', [{ json: {} }]);
+  const [notice] = await h.code('알림 만들기', '녹취·결정 합치기');
+  assert.deepEqual(notice.json, {
+    guildId: manifest.guildId,
+    textChannelId: CHANNEL,
+    notice: '회의 20261014-1400 녹취 완료, 발화 4개, 결정 메시지 3개',
+  });
+}
+
+// 차이 검사: 화면에서 갈래의 위아래를 바꾸면 실행 순서가 바뀌므로 차이로 찾는다.
+{
+  const swapped = JSON.parse(serialize(workflow));
+  const nodeIn = (name) => swapped.nodes.find((n) => n.name === name);
+  [nodeIn('결정 메시지 기간').position, nodeIn('음성 인식').position] = [nodeIn('음성 인식').position, nodeIn('결정 메시지 기간').position];
+  assert.deepEqual(diffWorkflows(workflow, swapped), ['~ 갈래 실행 순서 발화 파일 확인[main 0]: 결정 메시지 기간, 음성 인식 → 음성 인식, 결정 메시지 기간']);
 }
 
 console.log('회의 녹취 워크플로 오프라인 테스트 통과');

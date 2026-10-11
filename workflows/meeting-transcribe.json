@@ -74,6 +74,82 @@
     },
     {
       "parameters": {
+        "jsCode": "// 결정 메시지를 모을 기간을 정한다(설계 5절 D). 시작은 지난 회의록을 ClickUp에 올린 회의의 끝 시각(워크플로 static data, 9단계에서 갱신)이고,\n// 없으면 이번 회의 시작 7일 전이다. 끝은 이번 회의 종료 시각이다. 기간은 \"시작 초과 ~ 종료 이하\"다.\n// Discord 메시지 ID에는 작성 시각이 들어 있어서((ms - 2015-01-01) << 22) 기간을 메시지 ID로 바꿔 조회와 거르기에 쓴다.\nconst DISCORD_EPOCH = 1420070400000n;\nconst FIRST_RUN_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;\n// 결정 메시지 조회 노드가 이 횟수까지만 요청한다. 100개씩이라 5,000개까지 받는다(2026-10-11 사용자 결정).\nconst MAX_REQUESTS = 50;\n\nconst meeting = $('녹음 정보 확인').first().json;\nconst startedMs = Date.parse(meeting.startedAt);\nconst endedMs = Date.parse(meeting.endedAt);\n\n// 저장된 시각이 이번 회의 종료보다 앞일 때만 쓴다. 없거나 시각이 아니면 처음 실행처럼 7일 전부터 본다.\nconst stored = $getWorkflowStaticData('global').lastMeetingEndedAt;\nconst storedMs = typeof stored === 'string' ? Date.parse(stored) : NaN;\nconst useStored = Number.isFinite(storedMs) && storedMs < endedMs;\nconst fromMs = useStored ? storedMs : startedMs - FIRST_RUN_LOOKBACK_MS;\n\n// ms 밀리초에 쓰인 메시지의 ID는 idAt(ms)부터 idAt(ms + 1) - 1까지다.\nconst idAt = (ms) => (BigInt(ms) - DISCORD_EPOCH) << 22n;\n\nreturn [{\n  json: {\n    guildId: meeting.guildId,\n    channelId: meeting.textChannelId,\n    from: new Date(fromMs).toISOString(),\n    to: new Date(endedMs).toISOString(),\n    source: useStored ? '지난 회의 끝 시각' : '처음 실행(회의 시작 7일 전부터)',\n    // 이 ID보다 큰 메시지가 기간 시작 뒤에 쓰였다(after는 이 값을 빼고 그 뒤부터 준다).\n    afterId: (idAt(fromMs + 1) - 1n).toString(),\n    // 이 ID까지가 회의 종료 시각 안이다.\n    endId: (idAt(endedMs + 1) - 1n).toString(),\n    maxRequests: MAX_REQUESTS,\n  },\n}];\n"
+      },
+      "name": "결정 메시지 기간",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://discord.com/api/v10/channels/{{ $json.channelId }}/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "discordBotApi",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "limit",
+              "value": "100"
+            },
+            {
+              "name": "after",
+              "value": "={{ $json.afterId }}"
+            }
+          ]
+        },
+        "options": {
+          "pagination": {
+            "pagination": {
+              "paginationMode": "updateAParameterInEachRequest",
+              "parameters": {
+                "parameters": [
+                  {
+                    "type": "qs",
+                    "name": "after",
+                    "value": "={{ (Array.isArray($response.body) ? $response.body.map((m) => m.id).reduce((a, b) => (b.length > a.length || (b.length === a.length && b > a) ? b : a), '0') : $('결정 메시지 기간').first().json.afterId) }}"
+                  }
+                ]
+              },
+              "paginationCompleteWhen": "other",
+              "completeExpression": "={{ !Array.isArray($response.body) || $response.body.length < 100 || ((id, end) => id.length > end.length || (id.length === end.length && id > end))((Array.isArray($response.body) ? $response.body.map((m) => m.id).reduce((a, b) => (b.length > a.length || (b.length === a.length && b > a) ? b : a), '0') : $('결정 메시지 기간').first().json.afterId), $('결정 메시지 기간').first().json.endId) }}",
+              "limitPagesFetched": true,
+              "maxRequests": "={{ $('결정 메시지 기간').first().json.maxRequests }}"
+            }
+          }
+        }
+      },
+      "name": "결정 메시지 조회",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "position": [
+        1440,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 회의 채널 메시지 중 결정 메시지를 코드로 고른다(설계 5절 D, AGENTS.md 3.2). LLM은 결정 여부를 판단하지 않는다.\n// 기간 안에 사람이 쓴 메시지(봇·Webhook·시스템 메시지 제외) 중 ✅ 반응이 1개 이상인 것만 고른다.\n// 메시지 원문은 이 노드 출력(n8n 실행 기록, 7일 보관)에만 남긴다. 작성자 ID는 남기지 않는다.\nconst DISCORD_EPOCH = 1420070400000n;\n// 일반 메시지(0)와 답장(19)만 사람이 쓴 글로 본다. 입장·고정 알림 같은 시스템 메시지는 뺀다.\nconst HUMAN_TYPES = new Set([0, 19]);\n\n// 녹취 갈래와 따로 실행되므로(병렬 갈래) 녹취 결과를 읽지 않는다. 알림 문구는 알림 만들기 노드가 만든다.\nconst period = $('결정 메시지 기간').first().json;\n\n// Discord 메시지 ID는 길이가 다를 수 있어 길이부터 비교한다.\nconst isAfter = (a, b) => a.length > b.length || (a.length === b.length && a > b);\nconst msOf = (id) => Number((BigInt(id) >> 22n) + DISCORD_EPOCH);\n\n// 조회 노드는 메시지 하나를 항목 하나로 낸다. 받은 메시지가 없으면 alwaysOutputData로 빈 항목 하나가 온다.\n// 페이지 넘김 중 오류 응답을 받으면 n8n이 오류 본문을 출력 항목으로 낼 수 있어서(n8n 2.42.6 E2E에서 확인),\n// 메시지도 빈 항목도 아닌 것이 있으면 결정이 조용히 0개가 되지 않게 실패시킨다.\nconst isMessage = (m) => typeof m?.id === 'string' && /^\\d+$/.test(m.id);\nconst items = $input.all().map((item) => item.json);\nconst unexpected = items.filter((m) => !isMessage(m) && Object.keys(m ?? {}).length > 0);\nif (unexpected.length > 0) {\n  throw new Error(`결정 메시지 조회 결과에 메시지가 아닌 항목이 ${unexpected.length}개 있습니다. Discord 조회가 실패했을 수 있습니다`);\n}\nconst messages = items.filter(isMessage);\n\n// n8n 페이지 넘김은 요청 한도에 닿으면 오류 없이 멈춘다. 한도만큼 받았는데 회의 종료 시각에 닿지 못했으면\n// 더 받을 메시지가 남은 것이라 결정이 조용히 빠지지 않게 실패시킨다(2026-10-11 사용자 결정).\nconst newest = messages.reduce((a, m) => (isAfter(m.id, a) ? m.id : a), '0');\nif (messages.length >= period.maxRequests * 100 && !isAfter(newest, period.endId)) {\n  throw new Error(`회의 채널 메시지를 ${messages.length}개까지 받고도 회의 종료 시각에 닿지 못했습니다. 기간(${period.from} ~ ${period.to})을 확인해 주세요`);\n}\n\nconst inWindow = (m) => isAfter(m.id, period.afterId) && !isAfter(m.id, period.endId);\nconst byHuman = (m) => HUMAN_TYPES.has(m.type) && !m.author?.bot && !m.webhook_id;\nconst checked = (m) => (m.reactions ?? []).some((r) => r?.emoji?.name === '✅' && Number(r.count) >= 1);\nconst picked = messages\n  .filter((m) => inWindow(m) && byHuman(m) && checked(m))\n  .sort((a, b) => (isAfter(a.id, b.id) ? 1 : -1));\n\n// Message Content Intent가 꺼져 있으면 다른 사람 메시지 내용이 빈 문자열로 온다. 빈 결정이 회의록에 들어가지 않게 실패시킨다.\nconst blank = picked.filter((m) => String(m.content ?? '').trim() === '' && !(m.attachments ?? []).length);\nif (blank.length > 0) {\n  throw new Error(`✅가 달린 메시지 ${blank.length}개의 내용이 비어 있습니다. Discord 봇의 Message Content Intent가 켜져 있는지 확인해 주세요`);\n}\n\nconst decisions = picked.map((m) => ({\n  link: `https://discord.com/channels/${period.guildId}/${period.channelId}/${m.id}`,\n  author: m.author?.global_name || m.author?.username || '알 수 없음',\n  content: String(m.content ?? ''),\n  attachments: (m.attachments ?? []).map((a) => a.filename),\n  sentAt: new Date(msOf(m.id)).toISOString(),\n}));\n\nreturn [{\n  json: {\n    guildId: period.guildId,\n    textChannelId: period.channelId,\n    from: period.from,\n    to: period.to,\n    scanned: messages.length,\n    decisionCount: decisions.length,\n    decisions,\n  },\n}];\n"
+      },
+      "name": "결정 메시지 고르기",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        -200
+      ]
+    },
+    {
+      "parameters": {
         "method": "POST",
         "url": "https://api.openai.com/v1/audio/transcriptions",
         "authentication": "predefinedCredentialType",
@@ -123,18 +199,44 @@
       "waitBetweenTries": 5000,
       "position": [
         1200,
-        0
+        200
       ]
     },
     {
       "parameters": {
-        "jsCode": "// 음성 인식 결과를 회의 시작 기준 시각 순 녹취로 합친다. 이 [HH:MM:SS] 문자열이 이후 단계에서 녹취 근거의 식별자가 된다.\n// 녹취 원문은 이 노드 출력(n8n 실행 기록, 7일 보관)에만 남기고 Discord에는 발화 수만 알린다.\nconst meeting = $('녹음 정보 확인').first().json;\nconst texts = $input.all().map((item) => item.json.text);\nif (texts.length !== meeting.segments.length) {\n  throw new Error(`음성 인식 결과 수(${texts.length})가 발화 수(${meeting.segments.length})와 다릅니다`);\n}\n\nconst pad = (n) => String(n).padStart(2, '0');\nconst clock = (ms) => {\n  const s = Math.floor(ms / 1000);\n  return `${pad(Math.floor(s / 3600))}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;\n};\n\nconst lines = [];\nlet empty = 0;\nmeeting.segments.forEach((segment, i) => {\n  const text = typeof texts[i] === 'string' ? texts[i].replace(/\\s+/g, ' ').trim() : '';\n  if (text === '') {\n    empty += 1;\n    return;\n  }\n  lines.push({ ms: segment.startMs, order: 1, text: `[${clock(segment.startMs)}] ${segment.speaker}: ${text}` });\n});\n// 녹음이 끊긴 구간도 시각 순으로 끼워 넣는다. 그 사이의 말은 녹음되지 않았다.\nfor (const gap of meeting.gaps) {\n  const length = gap.endMs === null ? '회의 끝까지' : `약 ${Math.round((gap.endMs - gap.startMs) / 1000)}초`;\n  const reason = gap.reason ? `, ${gap.reason}` : '';\n  lines.push({ ms: gap.startMs, order: 0, text: `[${clock(gap.startMs)}] (녹음 끊김 ${length}${reason})` });\n}\nlines.sort((a, b) => a.ms - b.ms || a.order - b.order);\n\nconst segmentCount = meeting.segments.length;\nreturn [{\n  json: {\n    meetingId: meeting.meetingId,\n    guildId: meeting.guildId,\n    textChannelId: meeting.textChannelId,\n    transcript: lines.map((line) => line.text).join('\\n'),\n    segmentCount,\n    emptyCount: empty,\n    notice: `회의 ${meeting.meetingId} 녹취 완료, 발화 ${segmentCount}개`,\n  },\n}];\n"
+        "jsCode": "// 음성 인식 결과를 회의 시작 기준 시각 순 녹취로 합친다. 이 [HH:MM:SS] 문자열이 이후 단계에서 녹취 근거의 식별자가 된다.\n// 녹취 원문은 이 노드 출력(n8n 실행 기록, 7일 보관)에만 남긴다. 회의 채널 알림 문구는 알림 만들기 노드가 만든다.\nconst meeting = $('녹음 정보 확인').first().json;\nconst texts = $input.all().map((item) => item.json.text);\nif (texts.length !== meeting.segments.length) {\n  throw new Error(`음성 인식 결과 수(${texts.length})가 발화 수(${meeting.segments.length})와 다릅니다`);\n}\n\nconst pad = (n) => String(n).padStart(2, '0');\nconst clock = (ms) => {\n  const s = Math.floor(ms / 1000);\n  return `${pad(Math.floor(s / 3600))}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;\n};\n\nconst lines = [];\nlet empty = 0;\nmeeting.segments.forEach((segment, i) => {\n  const text = typeof texts[i] === 'string' ? texts[i].replace(/\\s+/g, ' ').trim() : '';\n  if (text === '') {\n    empty += 1;\n    return;\n  }\n  lines.push({ ms: segment.startMs, order: 1, text: `[${clock(segment.startMs)}] ${segment.speaker}: ${text}` });\n});\n// 녹음이 끊긴 구간도 시각 순으로 끼워 넣는다. 그 사이의 말은 녹음되지 않았다.\nfor (const gap of meeting.gaps) {\n  const length = gap.endMs === null ? '회의 끝까지' : `약 ${Math.round((gap.endMs - gap.startMs) / 1000)}초`;\n  const reason = gap.reason ? `, ${gap.reason}` : '';\n  lines.push({ ms: gap.startMs, order: 0, text: `[${clock(gap.startMs)}] (녹음 끊김 ${length}${reason})` });\n}\nlines.sort((a, b) => a.ms - b.ms || a.order - b.order);\n\nconst segmentCount = meeting.segments.length;\nreturn [{\n  json: {\n    meetingId: meeting.meetingId,\n    guildId: meeting.guildId,\n    textChannelId: meeting.textChannelId,\n    transcript: lines.map((line) => line.text).join('\\n'),\n    segmentCount,\n    emptyCount: empty,\n  },\n}];\n"
       },
       "name": "녹취 만들기",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
         1440,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "chooseBranch",
+        "chooseBranchMode": "waitForAll",
+        "output": "empty"
+      },
+      "name": "녹취·결정 합치기",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1920,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 두 갈래(결정 메시지, 녹취)가 모두 끝난 뒤 회의 채널 알림 문구를 만든다.\n// Discord 노드에는 멘션을 끄는 옵션이 없어서 녹취·결정 메시지 원문 같은 사람이 쓴 글은 넣지 않고 회의 ID와 숫자만 쓴다.\nconst meeting = $('녹음 정보 확인').first().json;\nconst transcript = $('녹취 만들기').first().json;\nconst picked = $('결정 메시지 고르기').first().json;\nreturn [{\n  json: {\n    guildId: meeting.guildId,\n    textChannelId: meeting.textChannelId,\n    notice: `회의 ${meeting.meetingId} 녹취 완료, 발화 ${transcript.segmentCount}개, 결정 메시지 ${picked.decisionCount}개`,\n  },\n}];\n"
+      },
+      "name": "알림 만들기",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2160,
         0
       ]
     },
@@ -161,7 +263,7 @@
       "type": "n8n-nodes-base.discord",
       "typeVersion": 2,
       "position": [
-        1680,
+        2400,
         0
       ]
     }
@@ -215,7 +317,45 @@
       "main": [
         [
           {
+            "node": "결정 메시지 기간",
+            "type": "main",
+            "index": 0
+          },
+          {
             "node": "음성 인식",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "결정 메시지 기간": {
+      "main": [
+        [
+          {
+            "node": "결정 메시지 조회",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "결정 메시지 조회": {
+      "main": [
+        [
+          {
+            "node": "결정 메시지 고르기",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "결정 메시지 고르기": {
+      "main": [
+        [
+          {
+            "node": "녹취·결정 합치기",
             "type": "main",
             "index": 0
           }
@@ -234,6 +374,28 @@
       ]
     },
     "녹취 만들기": {
+      "main": [
+        [
+          {
+            "node": "녹취·결정 합치기",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "녹취·결정 합치기": {
+      "main": [
+        [
+          {
+            "node": "알림 만들기",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "알림 만들기": {
       "main": [
         [
           {

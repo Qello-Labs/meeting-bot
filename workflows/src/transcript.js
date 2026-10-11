@@ -1,5 +1,5 @@
 // 음성 인식 결과를 회의 시작 기준 시각 순 녹취로 합친다. 이 [HH:MM:SS] 문자열이 이후 단계에서 녹취 근거의 식별자가 된다.
-// 녹취 원문은 이 노드 출력(n8n 실행 기록, 7일 보관)에만 남기고 Discord에는 발화 수만 알린다.
+// 녹취 원문은 이 노드 출력(n8n 실행 기록, 7일 보관)에만 남긴다. 회의 채널 알림 문구는 알림 만들기 노드가 만든다.
 const meeting = $('녹음 정보 확인').first().json;
 const texts = $input.all().map((item) => item.json.text);
 if (texts.length !== meeting.segments.length) {
@@ -39,6 +39,5 @@ return [{
     transcript: lines.map((line) => line.text).join('\n'),
     segmentCount,
     emptyCount: empty,
-    notice: `회의 ${meeting.meetingId} 녹취 완료, 발화 ${segmentCount}개`,
   },
 }];
