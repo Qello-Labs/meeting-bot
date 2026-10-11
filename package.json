@@ -11,7 +11,7 @@
     "deploy-commands": "node --env-file=.env src/deploy-commands.js",
     "start": "node --env-file=.env src/index.js",
     "test": "npm run test:recorder && npm run test:workflow",
-    "test:recorder": "node scripts/offline-test.js && node scripts/offline-reconnect-test.js && node scripts/offline-retention-test.js",
+    "test:recorder": "node scripts/offline-test.js && node scripts/offline-reconnect-test.js && node scripts/offline-retention-test.js && node scripts/offline-approval-test.js",
     "test:workflow": "node scripts/offline-workflow-test.js",
     "e2e:n8n": "node scripts/e2e-n8n.js"
   },

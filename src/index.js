@@ -1,6 +1,7 @@
 import path from 'node:path';
 import process from 'node:process';
 import { Client, Events, GatewayIntentBits, MessageFlags } from 'discord.js';
+import { handleApprovalButton } from './approval.js';
 import { finalizeRecording, notifyN8n } from './finalize.js';
 import { MeetingRecorder } from './recorder.js';
 import { pruneRecordings } from './retention.js';
@@ -117,6 +118,14 @@ async function handleStop(interaction) {
 }
 
 client.on(Events.InteractionCreate, async (interaction) => {
+  // 회의록 초안의 승인·거절 버튼(n8n이 보낸 메시지)
+  if (interaction.isButton()) {
+    await handleApprovalButton(interaction, { webhookUrl: config.webhookUrl }).catch((error) => {
+      console.error(`승인 버튼 처리 실패: ${error.message}`);
+      if (interaction.deferred) interaction.editReply('처리 중 오류가 났습니다. 잠시 뒤 다시 눌러 주세요.').catch(() => {});
+    });
+    return;
+  }
   if (!interaction.inCachedGuild() || !interaction.isChatInputCommand()) return;
   if (interaction.commandName !== '회의녹음') return;
 
