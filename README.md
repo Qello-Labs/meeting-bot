@@ -110,7 +110,7 @@ recordings/20261013-1400/
 npm test                                   # 녹음 봇 + 워크플로 오프라인 테스트. ffmpeg 필요
 docker build -t meeting-bot .
 docker run --rm meeting-bot npm run test:recorder   # 이미지에는 workflows/가 없어 녹음 봇 테스트만 돈다
-npm run e2e:n8n                            # 실제 n8n + 가짜 OpenAI·Discord. Docker와 openssl 필요, 비용 없음
+npm run e2e:n8n                            # 실제 n8n + 가짜 OpenAI·Discord·ClickUp. Docker와 openssl 필요, 비용 없음
 ```
 
 오프라인 테스트는 ffmpeg로 만든 Opus 패킷을 실제 수신 스트림에 넣는다. `offline-test.js`는 녹음, 강제 종료, webm 변환, manifest 작성을,

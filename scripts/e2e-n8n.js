@@ -1,4 +1,4 @@
-// 실제 n8n(2.42.6)에 회의 녹취 워크플로를 가져와 가짜 OpenAI·Discord 서버를 상대로 끝까지 돌린다.
+// 실제 n8n(2.42.6)에 회의 녹취 워크플로를 가져와 가짜 OpenAI·Discord·ClickUp 서버를 상대로 끝까지 돌린다.
 // 외부 API는 부르지 않아 비용이 들지 않는다. Docker가 필요하다. 녹음 파일은 내용 없는 가짜 webm이다.
 //   node scripts/e2e-n8n.js          실행 후 컨테이너를 내리고 임시 폴더를 지운다
 //   node scripts/e2e-n8n.js --keep   실패 원인을 보려고 컨테이너와 임시 폴더를 남긴다
@@ -13,6 +13,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { TEST_CREDENTIALS } from '../test/e2e/credentials.js';
+import { TEMPLATE } from '../test/e2e/template.js';
 import { buildWorkflow, credentialTypeOf } from './build-workflow.js';
 import { diffWorkflows, pickWorkflow } from './diff-workflow.js';
 
@@ -84,6 +85,8 @@ const DISCORD = /^\/discord\//;
 const DISCORD_POST = /^\/discord\/channels\/\d+\/messages$/;
 const isGet = (r) => r.method === 'GET' && DISCORD_POST.test(r.path);
 const isPost = (r) => r.method === 'POST' && DISCORD_POST.test(r.path);
+const TEMPLATE_PAGE = /^\/clickup\/api\/v3\/workspaces\/[^/]+\/docs\/[^/]+\/pages\/[^/]+$/;
+const DRAFT = /^\/openai\/responses$/;
 
 // 회의 채널 메시지(가짜). 기간 안 230개(✅ 사람 3개, ✅ 봇·Webhook 각 1개), 기간 전 1개, 회의 뒤 30개라 100·100·60개로 세 번 받는다.
 const DISCORD_EPOCH = 1420070400000n;
@@ -107,6 +110,71 @@ function channelMessages({ blankDecision = false } = {}) {
   const after = Array.from({ length: 30 }, (_, i) => at(end + 1000 * (i + 1), { content: i === 0 ? '회의 뒤 결정' : '잡담', reactions: i === 0 ? checkmark : [] }));
   return [before, ...inWindow, ...after];
 }
+const post = (control, json) =>
+  fetch(`${MOCK}/${control}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(json ?? {}) });
+const setTemplate = (content) => post('__template', { content });
+const setDraft = (body, status = 200) => post('__llm', { status, body });
+const linkOf = (m) => `https://discord.com/channels/${manifest.guildId}/${CHANNEL}/${m.id}`;
+
+/** GPT가 채운 것처럼 쓴 초안. 근거는 녹취 발화 시각과 수집한 ✅ 메시지 링크다. time을 바꾸면 근거가 틀린 초안이 된다. */
+function draftFor(messages, { time = '00:00:12' } = {}) {
+  const link = (content) => linkOf(messages.find((m) => m.content === content));
+  return `| 필드 | 값 |
+| ---| --- |
+| 일시 | 2026-10-14 |
+| 회의 종류 | 정기 회의 |
+| 참석자 | 도연, 참석자 2 |
+| 관련 명세 ID | 없음 |
+
+## 안건
+
+1. 배포 일정
+
+## 논의 내용
+
+### 배포 일정
+
+배포 일정과 API 버전을 논의했다.
+
+## 결정 사항
+
+*   배포는 금요일에 한다. 이유: 준비가 끝났다. (근거: 녹취 ${time}, [Discord 메시지](${link('결정 A: 배포는 금요일')}))
+*   API는 v2로 간다. 이유: 호환성. (근거: [Discord 메시지](${link('결정 B: API v2')}))
+*   회의 중 결정을 따른다. 이유: 합의했다. (근거: 녹취 01:02:05, [Discord 메시지](${link('결정 C: 회의 중 결정')}))
+
+## 액션 아이템
+
+| 담당 파트 | 담당자 | 할 일 | 기한 | ClickUp 작업 |
+| ---| ---| ---| ---| --- |
+| Backend | 도연 | 배포 | 2026-10-16 | 없음 |
+
+## 다음 회의
+
+*   일시: 2026-10-17
+
+### 안건
+
+1. 배포 회고
+
+## 기타
+
+*   없음`;
+}
+/** OpenAI Responses API 응답. 출력에는 reasoning 항목과 message 항목이 섞여 온다. */
+const gptResponse = (text, extra = {}) => ({
+  id: 'resp_e2e',
+  object: 'response',
+  status: 'completed',
+  incomplete_details: null,
+  model: 'gpt-6-luna',
+  output: [
+    { type: 'reasoning', id: 'rs_e2e', summary: [] },
+    { type: 'message', id: 'msg_e2e', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }] },
+  ],
+  usage: { input_tokens: 1000, output_tokens: 800, output_tokens_details: { reasoning_tokens: 300 }, total_tokens: 1800 },
+  ...extra,
+});
+
 const setMessages = (list) => fetch(`${MOCK}/__messages`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(list) });
 
 async function writeSegments(meetingId, segments) {
@@ -136,7 +204,7 @@ async function prepare() {
   // 일부 파일만 있는 회의
   await writeSegments('20261016-1400', manifest.segments.slice(1));
 
-  const workflow = await buildWorkflow({ openaiBase: 'http://mock:8080/openai' });
+  const workflow = await buildWorkflow({ openaiBase: 'http://mock:8080/openai', clickupBase: 'http://mock:8080/clickup/api/v3' });
   for (const node of workflow.nodes) {
     const type = credentialTypeOf(node);
     if (type) node.credentials = { [type]: { id: TEST_CREDENTIALS[type].id, name: TEST_CREDENTIALS[type].name } };
@@ -227,9 +295,11 @@ try {
   step('n8n에 테스트 자격 증명과 워크플로를 가져오고 publish');
   await startN8n(workflow);
 
-  step('1회차: 회의 종료 → 발화 파일 6개 읽기 → (결정 메시지 갈래, 음성 인식 갈래) → 알림 만들기 → 회의 채널 알림');
+  step('1회차: 회의 종료 → 발화 파일 6개 읽기 → (결정 메시지 갈래, 음성 인식 갈래) → 템플릿 읽기 → 초안 작성 → 초안 검증 → 회의 채널 알림');
   const messages = channelMessages();
   await setMessages(messages);
+  await setTemplate(TEMPLATE);
+  await setDraft(gptResponse(`\`\`\`markdown\n${draftFor(messages)}\n\`\`\``));
   await meetingEnded(manifest);
   const first = await waitFor('채널 알림', async () => {
     const requests = await mockRequests();
@@ -258,10 +328,33 @@ try {
   // 봇 토큰 방식의 Discord 노드는 서버 확인 요청 없이 메시지만 보낸다(서버 확인은 OAuth2일 때만).
   const [notice] = discord.filter(isPost);
   // Discord 노드에는 멘션을 끄는 옵션이 없다. 알림 문구가 코드가 만든 회의 ID와 숫자뿐인지 확인한다.
-  assert.deepEqual(notice.json, { content: '회의 20261014-1400 녹취 완료, 발화 6개, 결정 메시지 3개' });
+  assert.deepEqual(notice.json, { content: '회의 20261014-1400 녹취 완료, 발화 6개, 결정 메시지 3개, 초안 검증 통과' });
   // 결정 메시지 갈래가 화면 위쪽이라 음성 인식보다 먼저 실행된다.
   assert.ok(first.findIndex(isGet) < first.findIndex((r) => TRANSCRIBE.test(r.path)), '결정 메시지 조회가 음성 인식보다 먼저다');
-  console.log(`  메시지 조회 ${pages.length}번(음성 인식보다 먼저), 알림: ${notice.json.content}`);
+
+  // 템플릿은 두 갈래가 끝난 뒤 한 번 읽고, GPT는 그 뒤에 한 번 부른다.
+  const pageReads = byPath(first, TEMPLATE_PAGE);
+  assert.equal(pageReads.length, 1);
+  assert.equal(pageReads[0].authorization, 'dummy-e2e-clickup', 'ClickUp 자격 증명은 Authorization 헤더에 토큰을 넣는다');
+  assert.deepEqual(pageReads[0].query, { content_format: 'text/md' });
+  const draftCalls = byPath(first, DRAFT);
+  assert.equal(draftCalls.length, 1);
+  const [call] = draftCalls;
+  assert.equal(call.authorization, 'Bearer dummy-e2e-openai', '음성 인식과 같은 OpenAI 자격 증명');
+  assert.equal(call.json.model, 'gpt-6-luna');
+  assert.deepEqual(call.json.reasoning, { effort: 'high' });
+  assert.equal(call.json.max_output_tokens, 32000);
+  assert.equal(call.json.store, false);
+  for (const key of ['temperature', 'top_p']) assert.equal(call.json[key], undefined, `${key}를 보내지 않는다`);
+  const userText = call.json.input[0].content;
+  assert.ok(userText.includes(TEMPLATE), '템플릿 원문이 요청에 들어간다');
+  assert.ok(userText.includes('[00:00:12] 도연: 12초 발화'), '녹취가 요청에 들어간다');
+  assert.ok(['결정 A: 배포는 금요일', '결정 B: API v2', '결정 C: 회의 중 결정'].every((c) => userText.includes(c)));
+  assert.ok(!userText.includes(USER_B) && !userText.includes(USER_A), '요청에 참석자 Discord ID가 없다');
+  const order = (test) => first.findIndex((r) => test.test(r.path));
+  const lastTranscription = first.findLastIndex((r) => TRANSCRIBE.test(r.path));
+  assert.ok(lastTranscription < order(TEMPLATE_PAGE) && order(TEMPLATE_PAGE) < order(DRAFT) && order(DRAFT) < first.findIndex(isPost));
+  console.log(`  메시지 조회 ${pages.length}번(음성 인식보다 먼저), 템플릿 1번, GPT 1번, 알림: ${notice.json.content}`);
 
   step('2회차: 녹음 폴더가 없으면 음성 인식과 알림 없이 실패');
   await meetingEnded({ ...manifest, meetingId: '20261015-1400' });
@@ -298,6 +391,7 @@ try {
   console.log(`  조회 500 응답 ${failedFetches}번`);
   assert.equal(sixth.filter(isPost).length, 0, '조회가 실패하면 알림을 보내지 않는다');
   assert.equal(byPath(sixth, TRANSCRIBE).length, 0, 'Discord 쪽이 실패하면 음성 인식(유료)을 부르지 않는다');
+  assert.equal(byPath(sixth, DRAFT).length, 0, 'Discord 쪽이 실패하면 GPT(유료)를 부르지 않는다');
 
   step('7회차: ✅ 메시지 내용이 비어 있으면(Message Content Intent 꺼짐) 실패하고, 음성 인식과 알림은 하지 않는다');
   await setMessages(channelMessages({ blankDecision: true }));
@@ -308,6 +402,50 @@ try {
   const seventh = (await mockRequests()).slice(beforeSeventh);
   assert.equal(seventh.filter(isPost).length, 0);
   assert.equal(byPath(seventh, TRANSCRIBE).length, 0, 'Discord 쪽이 실패하면 음성 인식(유료)을 부르지 않는다');
+  assert.equal(byPath(seventh, DRAFT).length, 0);
+
+  step('8회차: 근거가 틀린 초안(녹음 끊김 줄의 시각)은 실행이 성공으로 끝나고, 알림에 오류 종류별 개수만 나온다');
+  await setMessages(messages);
+  await setDraft(gptResponse(draftFor(messages, { time: '00:00:20' })));
+  const beforeEighth = (await mockRequests()).length;
+  await meetingEnded(manifest);
+  const eighth = await waitFor('검증 실패 알림', async () => {
+    const requests = (await mockRequests()).slice(beforeEighth);
+    return requests.some(isPost) ? requests : null;
+  });
+  assert.deepEqual(eighth.find(isPost).json, {
+    content: '회의 20261014-1400 녹취 완료, 발화 6개, 결정 메시지 3개, 초안 검증 실패(녹취에 없는 시각 1개). 오류 목록은 n8n 실행 기록에 있습니다',
+  });
+
+  /** GPT 응답을 바꿔 회의를 한 번 돌리고, GPT를 부른 뒤 알림 없이 끝나는지 본다. */
+  async function draftFails(response) {
+    await setDraft(response);
+    const before = (await mockRequests()).length;
+    await meetingEnded(manifest);
+    await waitFor('GPT 호출', async () => (await mockRequests()).slice(before).some((r) => DRAFT.test(r.path)) || null);
+    await sleep(3_000);
+    const requests = (await mockRequests()).slice(before);
+    assert.equal(byPath(requests, DRAFT).length, 1, '잘림·거절은 HTTP 200이라 다시 부르지 않는다');
+    assert.equal(requests.filter(isPost).length, 0, '초안이 없으면 알림을 보내지 않고 실행이 실패한다');
+  }
+  step('9회차: 응답이 max_output_tokens에서 잘리면(incomplete) 실행이 실패한다');
+  await draftFails(gptResponse('| 필드 | 값 |', { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } }));
+  step('10회차: 거절(refusal)이면 실행이 실패한다');
+  await draftFails(gptResponse('', {
+    output: [{ type: 'message', id: 'msg_e2e', role: 'assistant', status: 'completed', content: [{ type: 'refusal', refusal: 'e2e' }] }],
+  }));
+
+  step('11회차: 템플릿 조회가 계속 실패(500)하면 다시 시도한 뒤 실행이 실패하고, GPT와 알림은 하지 않는다');
+  await setDraft(gptResponse(draftFor(messages)));
+  await post('__template-fail');
+  const beforeEleventh = (await mockRequests()).length;
+  await meetingEnded(manifest);
+  await waitFor('템플릿 조회 3번', async () => byPath((await mockRequests()).slice(beforeEleventh), TEMPLATE_PAGE).length >= 3 || null);
+  await sleep(5_000);
+  const eleventh = (await mockRequests()).slice(beforeEleventh);
+  assert.equal(byPath(eleventh, TEMPLATE_PAGE).filter((r) => r.status === 500).length, 3, '노드 재시도로 3번 요청한다');
+  assert.equal(byPath(eleventh, DRAFT).length, 0);
+  assert.equal(eleventh.filter(isPost).length, 0);
 
   step('n8n에서 내보낸 워크플로가 가져온 것과 동작이 같은지 차이 검사');
   await compose('exec', '-T', 'n8n', 'n8n', 'export:workflow', `--id=${workflow.id}`, '--output=/home/node/.n8n/exported.json');
@@ -316,8 +454,10 @@ try {
 
   step('n8n 실행 기록 확인');
   const executions = await readExecutions(workflow.id);
-  assert.deepEqual(executions.map((e) => e.status), ['success', 'error', 'error', 'error', 'success', 'error', 'error']);
-  const [ok, noFolder, oneMissing, badId, , fetchFailed, blank] = executions.map((e) => e.data);
+  assert.deepEqual(executions.map((e) => e.status), [
+    'success', 'error', 'error', 'error', 'success', 'error', 'error', 'success', 'error', 'error', 'error',
+  ]);
+  const [ok, noFolder, oneMissing, badId, , fetchFailed, blank, badEvidence, truncated, refused, noTemplate] = executions.map((e) => e.data);
   for (const line of [
     '[00:00:03] 참석자 2: 3초 발화',
     '[00:00:12] 도연: 12초 발화',
@@ -339,6 +479,19 @@ try {
   assert.ok(picked.decisions.every((d) => d.author === '도연' && d.link.startsWith(`https://discord.com/channels/${manifest.guildId}/${CHANNEL}/`)));
   assert.equal(unflatten(fetchFailed).resultData.lastNodeExecuted, '결정 메시지 조회', '조회 실패는 조회 노드에서 멈춘다');
   assert.ok(blank.includes('Message Content Intent'), '빈 내용 오류 메시지');
+  // 초안 검증: 코드 블록을 벗기고 고정 필드를 덮어쓴 초안과 응답 모델이 실행 기록에 남는다.
+  const [checked] = nodeOutput(ok, '초안 검증');
+  assert.equal(checked.draftOk, true);
+  assert.equal(checked.model, 'gpt-6-luna');
+  assert.equal(checked.usage.output_tokens_details.reasoning_tokens, 300);
+  assert.ok(checked.draft.startsWith('| 필드 | 값 |') && checked.draft.includes('| 참석자 | 도연, 참석자 2 |'));
+  const [wrong] = nodeOutput(badEvidence, '초안 검증');
+  assert.equal(wrong.draftOk, false);
+  assert.deepEqual(wrong.errors, [{ kind: '녹취에 없는 시각', detail: '00:00:20' }]);
+  assert.ok(truncated.includes('초안이 max_output_tokens에서 잘렸습니다'), '잘림 오류 메시지');
+  assert.ok(refused.includes('GPT가 초안 작성을 거절했습니다'), '거절 오류 메시지');
+  for (const data of [truncated, refused]) assert.equal(unflatten(data).resultData.lastNodeExecuted, '초안 검증');
+  assert.equal(unflatten(noTemplate).resultData.lastNodeExecuted, '템플릿 읽기', '템플릿 조회 실패는 템플릿 읽기에서 멈춘다');
   console.log(`  실행 ${executions.length}건: ${executions.map((e) => e.status).join(', ')}`);
 
   console.log('E2E PASS');

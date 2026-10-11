@@ -48,6 +48,9 @@ const nameOf = (userId, displayName) => {
   return name;
 };
 participants.forEach((p) => nameOf(p?.userId, p?.displayName));
+// 참석자 이름은 음성 인식 프롬프트를 만든 뒤에 화자를 더해 회의록 참석자 칸에 쓴다. 말한 사람이 participants에 없어도 참석자다.
+const prompt = names.size > 0 ? `참석자: ${[...new Set(names.values())].join(', ')}` : '';
+const speakers = segments.map((s) => nameOf(s.userId, s.displayName));
 
 return [{
   json: {
@@ -57,12 +60,13 @@ return [{
     startedAt: manifest.startedAt,
     endedAt: manifest.endedAt,
     // 참석자 이름을 알려 주면 음성 인식이 이름을 덜 틀린다.
-    prompt: names.size > 0 ? `참석자: ${[...new Set(names.values())].join(', ')}` : '',
-    segments: segments.map((s) => ({
+    prompt,
+    attendees: [...new Set(names.values())],
+    segments: segments.map((s, i) => ({
       file: s.file,
       startMs: s.startMs,
       endMs: s.endMs,
-      speaker: nameOf(s.userId, s.displayName),
+      speaker: speakers[i],
     })),
     gaps: gaps.map((g) => ({ startMs: g.startMs, endMs: g.endMs ?? null, reason: typeof g.reason === 'string' ? g.reason : '' })),
   },

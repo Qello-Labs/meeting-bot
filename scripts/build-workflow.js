@@ -12,6 +12,10 @@ export const WORKFLOW_FILE = path.join(ROOT, 'workflows/meeting-transcribe.json'
 
 const OPENAI_BASE = 'https://api.openai.com/v1';
 const DISCORD_BASE = 'https://discord.com/api/v10';
+const CLICKUP_BASE = 'https://api.clickup.com/api/v3';
+
+// 회의록 템플릿 페이지(설계 5절 E). 워크스페이스·문서·페이지 ID는 코드 상수로 둔다(2026-10-11 사용자 결정).
+const TEMPLATE_PAGE = 'workspaces/1100370000016776/docs/z8rzdfhxc8-2398/pages/z8rzdfhxc8-4718';
 
 // Discord 메시지 ID는 길이가 다를 수 있어 길이부터 비교한다. 받은 메시지 중 가장 큰 ID를 다음 after로 쓴다.
 // n8n 2.42.6은 첫 요청 전에도 이 식을 계산하고(그때는 응답이 없다), 오류 응답은 본문이 배열이 아니다.
@@ -43,8 +47,12 @@ const POSITIONS = {
   '음성 인식': [1200, 200],
   '녹취 만들기': [1440, 200],
   '녹취·결정 합치기': [1920, 0],
-  '알림 만들기': [2160, 0],
-  '회의 채널 알림': [2400, 0],
+  '템플릿 읽기': [2160, 0],
+  '초안 요청 만들기': [2400, 0],
+  '초안 작성': [2640, 0],
+  '초안 검증': [2880, 0],
+  '알림 만들기': [3120, 0],
+  '회의 채널 알림': [3360, 0],
 };
 
 // [보내는 노드, 받는 노드, 받는 입력 번호]
@@ -60,7 +68,11 @@ const EDGES = [
   ['결정 메시지 고르기', '녹취·결정 합치기', 0],
   ['음성 인식', '녹취 만들기'],
   ['녹취 만들기', '녹취·결정 합치기', 1],
-  ['녹취·결정 합치기', '알림 만들기'],
+  ['녹취·결정 합치기', '템플릿 읽기'],
+  ['템플릿 읽기', '초안 요청 만들기'],
+  ['초안 요청 만들기', '초안 작성'],
+  ['초안 작성', '초안 검증'],
+  ['초안 검증', '알림 만들기'],
   ['알림 만들기', '회의 채널 알림'],
 ];
 
@@ -91,7 +103,7 @@ const http = (name, parameters, settings = {}) => ({
 
 const credential = (type) => ({ authentication: 'predefinedCredentialType', nodeCredentialType: type });
 
-export async function buildWorkflow({ openaiBase = OPENAI_BASE } = {}) {
+export async function buildWorkflow({ openaiBase = OPENAI_BASE, clickupBase = CLICKUP_BASE } = {}) {
   const meeting = "$('녹음 정보 확인').first().json";
   const nodes = place([
     {
@@ -172,12 +184,43 @@ export async function buildWorkflow({ openaiBase = OPENAI_BASE } = {}) {
     ),
     code('녹취 만들기', await readCode('transcript')),
     {
-      // 두 갈래가 모두 끝날 때까지 기다렸다가 빈 항목 하나로 넘긴다. 알림 만들기가 두 갈래 결과를 노드 이름으로 읽는다.
+      // 두 갈래가 모두 끝날 때까지 기다렸다가 빈 항목 하나로 넘긴다. 템플릿 읽기는 한 번만 돌고, 뒤 노드가 두 갈래 결과를 노드 이름으로 읽는다.
       parameters: { mode: 'chooseBranch', chooseBranchMode: 'waitForAll', output: 'empty' },
       name: '녹취·결정 합치기',
       type: 'n8n-nodes-base.merge',
       typeVersion: 3.2,
     },
+    http(
+      '템플릿 읽기',
+      {
+        method: 'GET',
+        url: `${clickupBase}/${TEMPLATE_PAGE}`,
+        ...credential('clickUpApi'),
+        sendQuery: true,
+        queryParameters: { parameters: [{ name: 'content_format', value: 'text/md' }] },
+      },
+      // 읽기라 다시 보내도 안전하다. 3번 모두 실패하면 실행을 실패시킨다.
+      { retryOnFail: true, maxTries: 3, waitBetweenTries: 5000 },
+    ),
+    code('초안 요청 만들기', await readCode('draft-request')),
+    http(
+      '초안 작성',
+      {
+        method: 'POST',
+        // 음성 인식과 같은 OpenAI 자격 증명으로 Responses API를 부른다(2026-10-11 사용자 결정: 초안 모델을 OpenAI로).
+        url: `${openaiBase}/responses`,
+        ...credential('openAiApi'),
+        sendBody: true,
+        specifyBody: 'json',
+        jsonBody: '={{ JSON.stringify($json.request) }}',
+        // 응답이 몇 분 걸릴 수 있어 넉넉히 기다린다.
+        options: { timeout: 600000 },
+      },
+      // 잘림·거절은 HTTP 200이라 재시도하지 않고 초안 검증이 실패시킨다. 재시도는 연결 오류와 5xx·429 같은 HTTP 오류에만 일어난다
+      // (2026-10-11 사용자 결정: 3번 유지).
+      { retryOnFail: true, maxTries: 3, waitBetweenTries: 5000 },
+    ),
+    code('초안 검증', await readCode('draft-check')),
     code('알림 만들기', await readCode('notice')),
     {
       // 녹취와 결정 메시지 원문은 보내지 않는다. Discord 노드에는 멘션을 끄는 옵션이 없어서, 알림 문구를 코드가 만든 회의 ID와 숫자로만 채운다.
