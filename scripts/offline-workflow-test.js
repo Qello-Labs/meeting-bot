@@ -14,7 +14,7 @@ const SIGNATURE = 'ab'.repeat(32);
 const EXECUTION = { id: '4821', resumeUrl: `http://localhost:5678/webhook-waiting/4821?signature=${SIGNATURE}` };
 
 /** n8n Code 노드와 같은 이름($input, $, $getWorkflowStaticData, $execution)으로 노드 코드를 실행한다. */
-function harness(staticData = {}, execution = EXECUTION) {
+function harness(staticData = {}, execution = EXECUTION, wf = workflow) {
   const outputs = new Map();
   const items = (name) => {
     if (!outputs.has(name)) throw new Error(`${name} 노드 출력이 없습니다`);
@@ -26,7 +26,7 @@ function harness(staticData = {}, execution = EXECUTION) {
       outputs.set(name, list);
     },
     async code(name, input) {
-      const node = workflow.nodes.find((n) => n.name === name);
+      const node = wf.nodes.find((n) => n.name === name);
       // n8n 2.42.6 Code 노드 실행 환경에 없는 전역(URL, structuredClone)은 가려서, 쓰면 여기서도 실패하게 한다.
       const fn = new AsyncFunction('$input', '$', '$getWorkflowStaticData', '$execution', 'URL', 'structuredClone', node.parameters.jsCode);
       const result = await fn(ref(input), ref, () => staticData, execution, undefined, undefined);
@@ -166,14 +166,19 @@ for (const [label, body, expected] of [
   assert.equal(nodeOf('음성 인식').type, 'n8n-nodes-base.httpRequest');
   assert.ok(nodeOf('음성 인식').parameters.bodyParameters.parameters.some((p) => p.name === 'model' && p.value === 'gpt-4o-transcribe'));
   assert.equal(nodeOf('회의 채널 알림').type, 'n8n-nodes-base.discord');
-  assert.deepEqual(workflow.nodes.map(credentialTypeOf).filter(Boolean), ['discordBotApi', 'openAiApi', 'clickUpApi', 'openAiApi', 'discordBotApi', 'discordBotApi', 'discordBotApi', 'discordBotApi', 'discordBotApi']);
+  assert.deepEqual(workflow.nodes.map(credentialTypeOf).filter(Boolean), [
+    'discordBotApi', 'openAiApi', 'clickUpApi', 'openAiApi', 'discordBotApi', 'discordBotApi', 'discordBotApi',
+    'discordBotApi', 'discordBotApi', 'clickUpApi', 'clickUpApi', 'clickUpApi', 'discordBotApi', 'discordBotApi',
+  ]);
   assert.deepEqual(
     workflow.nodes.map((n) => n.name),
     [
       '회의 종료', '녹음 정보 확인', '발화 목록', '발화 파일 읽기', '발화 파일 확인',
       '결정 메시지 기간', '결정 메시지 조회', '결정 메시지 고르기', '음성 인식', '녹취 만들기',
       '녹취·결정 합치기', '템플릿 읽기', '초안 요청 만들기', '초안 작성', '초안 검증', '알림 만들기', '회의 채널 알림',
-      '초안 메시지 만들기', '긴 초안 확인', '초안 보내기(첨부)', '초안 보내기', '승인 기다리기', '결정 읽기', '결과 표시',
+      '초안 메시지 만들기', '긴 초안 확인', '초안 보내기(첨부)', '초안 보내기', '승인 기다리기', '결정 읽기', '기한 초과 확인',
+      '결정 응답', '승인·거절 확인', '수정 확인', '수정 반영 만들기', '수정 반영', '결과 표시', '쓰기 준비', '페이지 목록 읽기',
+      '쓰기 판단', '같은 이름 확인', '페이지 만들기', '페이지 다시 읽기', '내용 대조', '쓰기 결과 표시',
       '기한 초과 알림 만들기', '기한 초과 알림',
     ],
   );
@@ -212,7 +217,6 @@ for (const [label, body, expected] of [
     for (const p of fetch.options.pagination.pagination.parameters.parameters) delete p.type;
     delete node(c, '녹취·결정 합치기').parameters.chooseBranchMode;
     // 승인 기다리기(Wait): 응답 방식과 기한 종류의 기본값이 빠진다(n8n 2.42.6 화면 저장에서 확인).
-    delete node(c, '승인 기다리기').parameters.responseMode;
     delete node(c, '승인 기다리기').parameters.limitType;
   });
   assert.deepEqual(diffWorkflows(workflow, savedInEditor), []);
@@ -720,7 +724,7 @@ await assert.rejects(check(gptResponse('', { output: [{ type: 'reasoning', id: '
 }
 
 // ---------------------------------------------------------------------------
-// 초안 승인(8단계). 버튼 ID의 서명은 지어낸 값이다.
+// 초안 승인과 수정(8·9단계). 버튼 ID의 서명은 지어낸 값이다.
 // ---------------------------------------------------------------------------
 
 /** 초안 검증까지 돌리고 승인 메시지를 만든다. */
@@ -731,8 +735,10 @@ async function untilApproval(draft = GOOD_DRAFT, execution = EXECUTION) {
   h.set('회의 채널 알림', [{ json: { id: 'notice' } }]);
   return { h, checked: checked.json, items: await h.code('초안 메시지 만들기', '회의 채널 알림') };
 }
+const buttonsOf = (components) => components[0].components.map((b) => [b.label, b.custom_id]);
+const idOf = (action, rev, execution = '4821') => `mb:${action}:${execution}:${rev}:${SIGNATURE}`;
 
-// 검증을 통과한 초안: embed 하나, 승인·거절 버튼, 멘션 끔. 버튼 ID에 실행 ID와 서명이 들어간다.
+// 검증을 통과한 초안: embed 하나, 승인·수정·거절 버튼(1판), 멘션 끔. 버튼 ID에 실행 ID, 판 번호, 서명이 들어간다.
 {
   const { items, checked } = await untilApproval();
   assert.equal(items.length, 1);
@@ -740,24 +746,22 @@ async function untilApproval(draft = GOOD_DRAFT, execution = EXECUTION) {
   assert.equal(json.textChannelId, CHANNEL);
   assert.equal(json.attach, false);
   assert.equal(binary, undefined, '4,096자 이하는 파일을 붙이지 않는다');
+  assert.equal(json.rev, 1);
+  assert.equal(json.draft, checked.draft, '결정 읽기가 지금 초안으로 읽는다');
   assert.equal(json.payload.embeds.length, 1);
   assert.equal(json.payload.embeds[0].description, checked.draft);
   assert.equal(json.payload.embeds[0].title, '회의록 초안 (2026-10-14)');
   assert.deepEqual(json.payload.allowed_mentions, { parse: [] });
   assert.equal(json.payload.attachments, undefined);
-  const buttons = json.payload.components[0].components;
-  assert.deepEqual(buttons.map((b) => [b.label, b.custom_id]), [
-    ['승인', `mb:approve:4821:${SIGNATURE}`],
-    ['거절', `mb:reject:4821:${SIGNATURE}`],
-  ]);
-  assert.ok(buttons.every((b) => b.custom_id.length <= 100), '버튼 ID는 100자 이하');
+  assert.deepEqual(buttonsOf(json.payload.components), [['승인', idOf('approve', 1)], ['수정', idOf('edit', 1)], ['거절', idOf('reject', 1)]]);
   assert.match(json.payload.content, /^회의 20261014-1400 회의록 초안입니다\./);
 }
 
-// 실행 ID가 길어도(7자리) 버튼 ID는 100자 안이다. 형식이 다른 재개 주소는 실패한다.
+// 실행 ID 7자리와 판 번호 3자리여도 버튼 ID는 100자 안이다. 형식이 다른 재개 주소는 실패한다.
 {
   const long = await untilApproval(GOOD_DRAFT, { id: '9999999', resumeUrl: `http://n8n:5678/webhook-waiting/9999999?signature=${SIGNATURE}` });
   assert.ok(long.items[0].json.payload.components[0].components.every((b) => b.custom_id.length <= 100));
+  assert.ok(idOf('approve', 999, '9999999').length <= 100);
   for (const resumeUrl of [
     'http://localhost:5678/webhook-waiting/4821',
     'http://localhost:5678/webhook-waiting/4821?signature=xyz',
@@ -767,11 +771,20 @@ async function untilApproval(draft = GOOD_DRAFT, execution = EXECUTION) {
   }
 }
 
-// 4,096자를 넘는 초안: 앞부분만 embed에 보이고 전체는 .md 파일로 붙인다. 이모지를 반으로 자르지 않는다.
+/** 기타 칸을 늘려 초안을 길게 만든다. 이모지로 코드 포인트와 UTF-16 길이를 다르게 한다. */
+const longer = (repeat) => GOOD_DRAFT.replace(/## 기타\n\n\*   없음$/, `## 기타\n\n*   ${'가나다😀'.repeat(repeat)}`);
+
+// 4,000자를 넘으면 모달로 고칠 수 없어 수정 버튼을 달지 않는다(4,096자 이하라 embed 하나).
 {
-  const longDraft = GOOD_DRAFT.replace(/## 기타\n\n\*   없음$/, `## 기타\n\n*   ${'가나다😀'.repeat(1100)}`);
-  assert.notEqual(longDraft, GOOD_DRAFT);
-  const { items, checked } = await untilApproval(longDraft);
+  const { items, checked } = await untilApproval(longer(835));
+  assert.ok([...checked.draft].length > 4000 && [...checked.draft].length <= 4096, `${[...checked.draft].length}자`);
+  assert.equal(items[0].json.attach, false);
+  assert.deepEqual(buttonsOf(items[0].json.payload.components).map(([label]) => label), ['승인', '거절']);
+}
+
+// 4,096자를 넘는 초안: 앞부분만 embed에 보이고 전체는 .md 파일로 붙인다. 이모지를 반으로 자르지 않는다. 수정 버튼은 없다.
+{
+  const { items, checked } = await untilApproval(longer(1100));
   assert.equal(checked.draftOk, true);
   const [{ json, binary }] = items;
   assert.equal(json.attach, true);
@@ -783,6 +796,7 @@ async function untilApproval(draft = GOOD_DRAFT, execution = EXECUTION) {
   assert.equal(binary.draft.fileName, 'meeting-notes-draft-20261014-1400.md');
   assert.equal(binary.draft.mimeType, 'text/markdown');
   assert.equal(Buffer.from(binary.draft.data, 'base64').toString('utf8'), checked.draft, '첨부 파일은 초안 전체');
+  assert.deepEqual(buttonsOf(json.payload.components).map(([label]) => label), ['승인', '거절']);
 }
 
 // 검증에 실패한 초안은 승인 메시지를 만들지 않는다(항목 없음 → 뒤 노드가 돌지 않는다).
@@ -792,85 +806,279 @@ async function untilApproval(draft = GOOD_DRAFT, execution = EXECUTION) {
   assert.deepEqual(items, []);
 }
 
-/** 승인 기다리기가 낸 항목으로 결정 읽기와 기한 초과 알림 만들기를 돌린다. */
-async function afterWait(waitOutput, sentBy = '초안 보내기') {
-  const { h: e } = await untilApproval();
-  e.set(sentBy, [{ json: { id: '1500000000000000001', channel_id: CHANNEL, content: '초안' } }]);
-  e.set('승인 기다리기', [{ json: waitOutput }]);
-  const [result] = await e.code('결정 읽기', '승인 기다리기');
-  e.set('결과 표시', [{ json: { id: '1500000000000000001' } }]);
-  const timeout = await e.code('기한 초과 알림 만들기', '결과 표시');
-  return { result: result.json, timeout };
+const MESSAGE_ID = '1500000000000000001';
+/**
+ * 승인 기다리기가 낸 항목으로 결정 읽기를 돌린다. edited를 주면 그 판으로 이미 한 번 고친 것처럼 수정 반영 만들기 출력을 둔다.
+ * 수정 반영 만들기·기한 초과 알림 만들기를 이어서 돌릴 수 있게 harness를 돌려준다.
+ */
+async function decide(waitOutput, { sentBy = '초안 보내기', edited } = {}) {
+  const { h } = await untilApproval();
+  h.set(sentBy, [{ json: { id: MESSAGE_ID, channel_id: CHANNEL, content: '초안' } }]);
+  if (edited) h.set('수정 반영 만들기', [{ json: edited }]);
+  h.set('승인 기다리기', [{ json: waitOutput }]);
+  const [result] = await h.code('결정 읽기', '승인 기다리기');
+  return { h, result: result.json };
 }
 const resumed = (body) => ({ headers: {}, params: {}, query: {}, body, webhookUrl: 'http://n8n', executionMode: 'production' });
+const settled = (text) => ({ content: `회의 20261014-1400 회의록 초안: ${text}`, components: [], allowed_mentions: { parse: [] } });
 
-// 승인·거절: 버튼을 지우고 결과와 누른 사람 이름을 본문에 적는다. 기한 초과 알림은 보내지 않는다.
-for (const [decision, label] of [['approve', '승인'], ['reject', '거절']]) {
-  const { result, timeout } = await afterWait(resumed({ decision, by: '도연' }));
-  assert.equal(result.decision, decision);
-  assert.equal(result.by, '도연');
-  assert.equal(result.textChannelId, CHANNEL);
-  assert.equal(result.messageId, '1500000000000000001');
-  assert.deepEqual(result.body, {
-    content: `회의 20261014-1400 회의록 초안: ${label}(도연)`,
-    components: [],
-    allowed_mentions: { parse: [] },
-  });
-  assert.deepEqual(timeout, []);
+// 승인·거절: 판 번호가 맞으면 받음으로 답하고, 버튼을 지우고 결과와 누른 사람 이름을 본문에 적는다.
+{
+  const approve = (await decide(resumed({ decision: 'approve', rev: 1, by: '도연' }))).result;
+  assert.deepEqual([approve.outcome, approve.by, approve.rev, approve.textChannelId, approve.messageId], ['approve', '도연', 1, CHANNEL, MESSAGE_ID]);
+  assert.deepEqual(approve.response, { result: 'accepted', decision: 'approve' });
+  assert.deepEqual(approve.body, settled('승인(도연). ClickUp에 쓰는 중입니다'));
+  const reject = (await decide(resumed({ decision: 'reject', rev: 1, by: '도연' }))).result;
+  assert.deepEqual([reject.outcome, reject.response], ['reject', { result: 'accepted', decision: 'reject' }]);
+  assert.deepEqual(reject.body, settled('거절(도연)'));
 }
 
 // 긴 초안은 초안 보내기(첨부)로 보냈다. 결정 읽기는 실제로 실행된 보내기 노드에서 메시지 ID를 읽는다.
 {
-  const { result } = await afterWait(resumed({ decision: 'approve', by: '도연' }), '초안 보내기(첨부)');
-  assert.equal(result.messageId, '1500000000000000001');
-  assert.equal(result.textChannelId, CHANNEL);
+  const { result } = await decide(resumed({ decision: 'approve', rev: 1, by: '도연' }), { sentBy: '초안 보내기(첨부)' });
+  assert.deepEqual([result.messageId, result.textChannelId], [MESSAGE_ID, CHANNEL]);
+}
+
+// 판 번호가 지금 판과 다르면(늦은 클릭, 동시 수정) 반영하지 않고 "이미 바뀜"으로 답한다. 본문을 고치지 않는다.
+for (const rev of [0, 2]) {
+  const { result } = await decide(resumed({ decision: 'approve', rev, by: '도연' }));
+  assert.equal(result.outcome, 'stale');
+  assert.deepEqual(result.response, { result: 'stale', rev: 1 });
+  assert.equal(result.body, undefined);
 }
 
 // 누른 사람 이름은 한 줄로 줄이고 80자로 자른다. 이름이 없으면 "알 수 없음".
 {
-  const { result } = await afterWait(resumed({ decision: 'approve', by: `  줄\n바꿈 ${'가'.repeat(100)}` }));
+  const { result } = await decide(resumed({ decision: 'approve', rev: 1, by: `  줄\n바꿈 ${'가'.repeat(100)}` }));
   assert.equal(result.by, `줄 바꿈 ${'가'.repeat(100)}`.slice(0, 80));
-  assert.equal((await afterWait(resumed({ decision: 'reject' }))).result.by, '알 수 없음');
+  assert.equal((await decide(resumed({ decision: 'reject', rev: 1 }))).result.by, '알 수 없음');
 }
 
-// 기한 초과: 본문 없이 보낸 메시지가 그대로 온다. 버튼을 지우고 회의 채널에 답장으로 알린다.
+// 기한 초과: 본문 없이 받은 항목이 그대로 온다. 응답할 요청이 없고, 버튼을 지운 뒤 회의 채널에 답장으로 알린다.
 {
-  const { result, timeout } = await afterWait({ id: '1500000000000000001', channel_id: CHANNEL, content: '초안' });
-  assert.equal(result.decision, 'timeout');
-  assert.equal(result.by, null);
-  assert.equal(result.body.content, '회의 20261014-1400 회의록 초안: 기한 초과(3일 동안 승인·거절 없음)');
-  assert.deepEqual(result.body.components, []);
-  assert.equal(timeout.length, 1);
-  assert.deepEqual(timeout[0].json, {
+  const { h, result } = await decide({ id: MESSAGE_ID, channel_id: CHANNEL, content: '초안' });
+  assert.deepEqual([result.outcome, result.by, result.response], ['timeout', null, null]);
+  assert.deepEqual(result.body, settled('기한 초과(3일 동안 승인·거절 없음)'));
+  h.set('결과 표시', [{ json: { id: MESSAGE_ID } }]);
+  const timeout = await h.code('기한 초과 알림 만들기', '결과 표시');
+  assert.deepEqual(timeout.map((item) => item.json), [{
     textChannelId: CHANNEL,
     body: {
       content: '회의 20261014-1400 회의록 초안을 3일 동안 아무도 승인하거나 거절하지 않아 ClickUp에 쓰지 않았습니다.',
-      message_reference: { message_id: '1500000000000000001', fail_if_not_exists: false },
+      message_reference: { message_id: MESSAGE_ID, fail_if_not_exists: false },
       allowed_mentions: { parse: [], replied_user: false },
     },
-  });
+  }]);
 }
 
-// 알 수 없는 결정은 실패한다(녹음 봇만 재개 주소를 부른다).
-await assert.rejects(afterWait(resumed({ decision: 'approve-all' })), /알 수 없는 결정/);
-await assert.rejects(afterWait(resumed(null)), /알 수 없는 결정/);
+// 승인·거절에는 기한 초과 알림을 보내지 않는다.
+{
+  const { h } = await decide(resumed({ decision: 'approve', rev: 1, by: '도연' }));
+  h.set('결과 표시', [{ json: { id: MESSAGE_ID } }]);
+  assert.deepEqual(await h.code('기한 초과 알림 만들기', '결과 표시'), []);
+}
 
-// 노드 설정: 회의 채널 알림 뒤로 한 줄로 이어지고, 초안·기한 초과 알림은 다시 보내지 않으며, 기다림은 3일이다.
+// 알 수 없는 결정, 판 번호 없음은 실패한다(녹음 봇만 재개 주소를 부른다).
+await assert.rejects(decide(resumed({ decision: 'approve-all', rev: 1 })), /알 수 없는 결정/);
+await assert.rejects(decide(resumed({ decision: 'approve', rev: '1' })), /알 수 없는 결정/);
+await assert.rejects(decide(resumed(null)), /알 수 없는 결정/);
+
+// 수정: 고친 초안을 초안 검증과 같은 규칙으로 다시 검증한다. 통과하면 고정 필드를 덮어쓴 초안으로 같은 메시지를 2판으로 바꾼다.
+{
+  const fixed = GOOD_DRAFT.replace('배포는 금요일에 한다.', '배포는 금요일 오후에 한다.').replace('| 일시 | 2026-10-15 |', '| 일시 | 2027-01-01 |');
+  const { h, result } = await decide(resumed({ decision: 'edit', rev: 1, by: '민수', draft: `${fixed.replace(/\n/g, '\r\n')}\n\n` }));
+  assert.equal(result.outcome, 'edited');
+  assert.deepEqual(result.response, { result: 'accepted', decision: 'edit' });
+  assert.equal(result.edited.draftOk, true);
+  assert.ok(result.edited.draft.includes('배포는 금요일 오후에 한다.'));
+  assert.ok(result.edited.draft.includes('| 일시 | 2026-10-14 |'), '고친 초안의 고정 필드도 코드가 덮어쓴다');
+  assert.ok(!result.edited.draft.includes('\r'));
+  const [made] = await h.code('수정 반영 만들기', '수정 확인');
+  assert.deepEqual([made.json.rev, made.json.draft, made.json.textChannelId, made.json.messageId], [2, result.edited.draft, CHANNEL, MESSAGE_ID]);
+  assert.equal(made.json.body.content, '회의 20261014-1400 회의록 초안입니다(수정: 민수). 3일 안에 승인 또는 거절을 눌러 주세요.');
+  assert.deepEqual(made.json.body.embeds, [{ title: '회의록 초안 (2026-10-14)', description: result.edited.draft }]);
+  assert.deepEqual(buttonsOf(made.json.body.components), [['승인', idOf('approve', 2)], ['수정', idOf('edit', 2)], ['거절', idOf('reject', 2)]]);
+  assert.deepEqual(made.json.body.allowed_mentions, { parse: [] });
+}
+
+// 고친 뒤(2판)에는 2판 버튼만 반영되고, 1판 버튼은 이미 바뀜이다. 승인하면 고친 초안이 지금 초안이다.
+{
+  const edited = { rev: 2, draft: '고친 초안 2판' };
+  const approved = (await decide(resumed({ decision: 'approve', rev: 2, by: '도연' }), { edited })).result;
+  assert.deepEqual([approved.outcome, approved.rev, approved.draft], ['approve', 2, '고친 초안 2판']);
+  const late = (await decide(resumed({ decision: 'approve', rev: 1, by: '도연' }), { edited })).result;
+  assert.deepEqual([late.outcome, late.response], ['stale', { result: 'stale', rev: 2 }]);
+}
+
+// 고친 초안이 검증에 실패하면 지금 초안을 그대로 두고, 오류 종류별 개수로 답한다(2026-10-11 사용자 결정).
+{
+  const { result } = await decide(resumed({ decision: 'edit', rev: 1, by: '민수', draft: GOOD_DRAFT.replace('녹취 00:00:12', '녹취 00:00:20') }));
+  assert.equal(result.outcome, 'editInvalid');
+  assert.deepEqual(result.response, { result: 'invalid', errorCounts: { '녹취에 없는 시각': 1 } });
+  assert.deepEqual(result.errors, [{ kind: '녹취에 없는 시각', detail: '00:00:20' }]);
+  assert.equal(result.body, undefined);
+}
+
+// 고친 초안이 비었거나 모달 한도(4,000자)를 넘으면 실패한다.
+await assert.rejects(decide(resumed({ decision: 'edit', rev: 1, by: '민수', draft: '  ' })), /비었거나 모달 한도/);
+await assert.rejects(decide(resumed({ decision: 'edit', rev: 1, by: '민수' })), /비었거나 모달 한도/);
+await assert.rejects(decide(resumed({ decision: 'edit', rev: 1, by: '민수', draft: '가'.repeat(4001) })), /비었거나 모달 한도/);
+
+// ---------------------------------------------------------------------------
+// ClickUp 쓰기와 대조(9단계). 페이지 ID와 내용은 지어낸 값이다.
+// ---------------------------------------------------------------------------
+
+const PARENT = 'z8rzdfhxc8-9001';
+const clickupWorkflow = await buildWorkflow({ minutesParentPage: PARENT });
+
+/** 승인된 초안으로 쓰기 준비를 돌린다. */
+async function prepareWrite(draft, { outcome = 'approve', wf = clickupWorkflow, staticData = {} } = {}) {
+  const h = harness(staticData, EXECUTION, wf);
+  h.set('녹음 정보 확인', [{ json: { meetingId: manifest.meetingId, endedAt: manifest.endedAt } }]);
+  h.set('초안 요청 만들기', [{ json: { meetingDate: '2026-10-14' } }]);
+  h.set('결정 읽기', [{ json: { outcome, by: '도연', draft, textChannelId: CHANNEL, messageId: MESSAGE_ID } }]);
+  h.set('결과 표시', [{ json: { id: MESSAGE_ID } }]);
+  return { h, items: await h.code('쓰기 준비', '결과 표시') };
+}
+
+// Markdown 보정: 인용 뒤 빈 줄, 새 번호 목록 앞 빈 줄, ~ 이스케이프, 따옴표 안 굵게를 밖으로, 표 셀 안 굵게 제거. 두 번 적용해도 같다.
+{
+  const draft = [
+    '> 인용', '다음 줄',
+    '*   항목', '1. 새 목록',
+    '범위 1~3, 이미 \\~ 처리',
+    '**“강조”** 문장',
+    '| **굵게** | 값 |',
+    '본문의 **굵게**는 둔다',
+  ].join('\n');
+  const [prepared] = (await prepareWrite(draft)).items;
+  assert.equal(prepared.json.content, [
+    '> 인용', '', '다음 줄',
+    '*   항목', '', '1. 새 목록',
+    '범위 1\\~3, 이미 \\~ 처리',
+    '“**강조**” 문장',
+    '| 굵게 | 값 |',
+    '본문의 **굵게**는 둔다',
+  ].join('\n'));
+  const [again] = (await prepareWrite(prepared.json.content)).items;
+  assert.equal(again.json.content, prepared.json.content, '여러 번 적용해도 결과가 같다');
+  assert.equal(prepared.json.name, '2026-10-14 정기 회의');
+  assert.deepEqual(prepared.json.request, { parent_page_id: PARENT, name: '2026-10-14 정기 회의', content: prepared.json.content, content_format: 'text/md' });
+}
+
+// 승인이 아니면 쓰지 않는다. 상위 페이지 ID가 비어 있으면 아무것도 쓰지 않고 실패한다.
+{
+  for (const outcome of ['reject', 'timeout']) assert.deepEqual((await prepareWrite('초안', { outcome })).items, []);
+  await assert.rejects(prepareWrite('초안', { wf: await buildWorkflow({ minutesParentPage: '' }) }), /ClickUp 상위 페이지 ID가 없습니다/);
+}
+
+/** 쓰기 판단: 페이지 목록(트리)의 맨 위 페이지가 항목 하나씩 온다. */
+async function dedupe(listing) {
+  const { h } = await prepareWrite(GOOD_DRAFT);
+  h.set('페이지 목록 읽기', listing.length ? listing.map((json) => ({ json })) : [{ json: {} }]);
+  const [result] = await h.code('쓰기 판단', '페이지 목록 읽기');
+  return result.json;
+}
+const tree = (children) => [
+  { id: 'z8rzdfhxc8-1', name: '안내', pages: [] },
+  { id: 'z8rzdfhxc8-38', name: '회의록', pages: [{ id: PARENT, name: '회의록 테스트', parent_page_id: 'z8rzdfhxc8-38', pages: children }] },
+];
+
+// 상위 페이지 아래에 같은 이름이 없으면 쓴다. 다른 상위 페이지 아래의 같은 이름은 상관없다.
+{
+  const result = await dedupe(tree([{ id: 'p1', name: '2026-10-07 정기 회의' }]));
+  assert.equal(result.duplicate, false);
+  assert.equal(result.request.parent_page_id, PARENT);
+  assert.equal(result.body, null);
+  const elsewhere = [...tree([]), { id: 'z8rzdfhxc8-50', name: '다른 곳', pages: [{ id: 'p2', name: '2026-10-14 정기 회의' }] }];
+  assert.equal((await dedupe(elsewhere)).duplicate, false);
+}
+
+// 같은 이름이 있으면 쓰지 않고 초안 메시지에 이유를 적는다.
+{
+  const result = await dedupe(tree([{ id: 'p1', name: '2026-10-14 정기 회의' }]));
+  assert.equal(result.duplicate, true);
+  assert.deepEqual([result.textChannelId, result.messageId], [CHANNEL, MESSAGE_ID]);
+  assert.deepEqual(result.body, settled('승인(도연). ClickUp에 같은 이름(2026-10-14 정기 회의)의 페이지가 있어 쓰지 않았습니다'));
+}
+
+// 상위 페이지를 찾지 못하면(ID 설정이 틀림, 목록이 빔) 문서 맨 위에 쓰지 않고 실패한다.
+await assert.rejects(dedupe([{ id: 'z8rzdfhxc8-1', name: '안내' }]), /상위 페이지를 찾지 못했습니다/);
+await assert.rejects(dedupe([]), /상위 페이지를 찾지 못했습니다/);
+
+/** 내용 대조: 만든 페이지를 다시 읽은 결과로 대조하고 지난 회의 끝 시각을 갱신한다. */
+async function verify(readBack, staticData = {}, { attendees } = {}) {
+  const draft = attendees ? GOOD_DRAFT.replace('| 참석자 | 도연 |', attendees) : GOOD_DRAFT;
+  const { h, items } = await prepareWrite(draft, { staticData });
+  const [prepared] = items;
+  h.set('페이지 만들기', [{ json: { id: 'z8rzdfhxc8-7001', name: prepared.json.name, parent_page_id: PARENT } }]);
+  h.set('페이지 다시 읽기', [{ json: { id: 'z8rzdfhxc8-7001', name: prepared.json.name, parent_page_id: PARENT, ...readBack(prepared.json.content) } }]);
+  const [result] = await h.code('내용 대조', '페이지 다시 읽기');
+  return result.json;
+}
+const PAGE_LINK = 'https://app.clickup.com/1100370000016776/v/dc/z8rzdfhxc8-98/z8rzdfhxc8-7001';
+
+// 공백, 목록 기호, 표 구분선, 역슬래시 이스케이프 차이는 같은 것으로 본다. 쓰고 나면 지난 회의 끝 시각을 이번 회의 종료로 바꾼다.
+// 실제 ClickUp은 링크가 아닌 대괄호를 \[…\]로 바꿔 저장했다(2026-10-11, 참석자 이름의 대괄호).
+{
+  const staticData = { lastMeetingEndedAt: '2026-10-07T06:00:00.000Z' };
+  const result = await verify((content) => ({
+    content: `${content.replace(/^\*   /gm, '- ').replace(/\| ---\| ---\|/g, '|---|---|').replace(/  +/g, ' ')
+      .replace('| 참석자 | 도연, 참석자 2 [15기] |', '| 참석자 | 도연, 참석자 2 \\[15기\\] |')}\n\n`,
+  }), staticData, { attendees: '| 참석자 | 도연, 참석자 2 [15기] |' });
+  assert.deepEqual([result.matched, result.differentLines, result.nameOk, result.parentOk], [true, 0, true, true]);
+  assert.equal(result.link, PAGE_LINK);
+  assert.deepEqual(result.body, settled(`승인(도연). ClickUp에 썼습니다: ${PAGE_LINK}`));
+  assert.equal(staticData.lastMeetingEndedAt, manifest.endedAt);
+}
+
+// 본문 줄이나 제목, 상위 페이지가 다르면 다른 곳을 알린다. 페이지는 이미 있으므로 지난 회의 끝 시각은 갱신한다.
+{
+  const staticData = {};
+  const changed = await verify((content) => ({ content: content.replace('배포는 금요일에 한다.', '배포는 토요일에 한다.') }), staticData);
+  assert.deepEqual([changed.matched, changed.differentLines], [false, 2]);
+  assert.deepEqual(changed.body, settled(`승인(도연). ClickUp에 썼지만 다시 읽은 내용이 달라 확인이 필요합니다(본문 2줄): ${PAGE_LINK}`));
+  assert.equal(staticData.lastMeetingEndedAt, manifest.endedAt);
+  const moved = await verify(() => ({ name: '다른 제목', parent_page_id: 'z8rzdfhxc8-38', content: '' }));
+  assert.equal(moved.matched, false);
+  assert.match(moved.body.content, /확인이 필요합니다\(제목, 상위 페이지, 본문 \d+줄\)/);
+}
+
+// 노드 설정: 결정 읽기 뒤 갈래와 다시 기다리는 연결, 응답 노드, ClickUp 요청.
 {
   const nodeOf = (name) => workflow.nodes.find((n) => n.name === name);
   const link = (node) => ({ node, type: 'main', index: 0 });
-  const chain = ['승인 기다리기', '결정 읽기', '결과 표시', '기한 초과 알림 만들기', '기한 초과 알림'];
-  chain.slice(0, -1).forEach((from, i) => assert.deepEqual(workflow.connections[from].main, [[link(chain[i + 1])]]));
-  assert.deepEqual(workflow.connections['회의 채널 알림'].main, [[link('초안 메시지 만들기')]]);
-  assert.deepEqual(workflow.connections['초안 메시지 만들기'].main, [[link('긴 초안 확인')]]);
-  // If 노드: 참(긴 초안)은 첨부해 보내고, 거짓은 embed만 보낸다. 둘 다 승인 기다리기로 간다.
-  assert.deepEqual(workflow.connections['긴 초안 확인'].main, [[link('초안 보내기(첨부)')], [link('초안 보내기')]]);
-  for (const name of ['초안 보내기(첨부)', '초안 보내기']) assert.deepEqual(workflow.connections[name].main, [[link('승인 기다리기')]]);
-  const branch = nodeOf('긴 초안 확인');
-  assert.equal(branch.type, 'n8n-nodes-base.if');
-  assert.deepEqual(branch.parameters.conditions.conditions.map((c) => [c.leftValue, c.operator]), [
-    ['={{ $json.attach }}', { type: 'boolean', operation: 'true', singleValue: true }],
-  ]);
+  const outputs = (name) => workflow.connections[name].main;
+  assert.deepEqual(outputs('회의 채널 알림'), [[link('초안 메시지 만들기')]]);
+  assert.deepEqual(outputs('초안 메시지 만들기'), [[link('긴 초안 확인')]]);
+  // If 노드: 출력 0이 참, 1이 거짓이다.
+  assert.deepEqual(outputs('긴 초안 확인'), [[link('초안 보내기(첨부)')], [link('초안 보내기')]]);
+  for (const name of ['초안 보내기(첨부)', '초안 보내기']) assert.deepEqual(outputs(name), [[link('승인 기다리기')]]);
+  assert.deepEqual(outputs('승인 기다리기'), [[link('결정 읽기')]]);
+  assert.deepEqual(outputs('결정 읽기'), [[link('기한 초과 확인')]]);
+  assert.deepEqual(outputs('기한 초과 확인'), [[link('결과 표시')], [link('결정 응답')]]);
+  assert.deepEqual(outputs('결정 응답'), [[link('승인·거절 확인')]]);
+  assert.deepEqual(outputs('승인·거절 확인'), [[link('결과 표시')], [link('수정 확인')]]);
+  assert.deepEqual(outputs('수정 확인'), [[link('수정 반영 만들기')], [link('승인 기다리기')]], '이미 바뀜·검증 실패는 다시 기다린다');
+  assert.deepEqual(outputs('수정 반영 만들기'), [[link('수정 반영')]]);
+  assert.deepEqual(outputs('수정 반영'), [[link('승인 기다리기')]], '고친 뒤 다시 기다린다');
+  assert.deepEqual(outputs('결과 표시'), [[link('쓰기 준비'), link('기한 초과 알림 만들기')]]);
+  assert.deepEqual(outputs('쓰기 준비'), [[link('페이지 목록 읽기')]]);
+  assert.deepEqual(outputs('페이지 목록 읽기'), [[link('쓰기 판단')]]);
+  assert.deepEqual(outputs('쓰기 판단'), [[link('같은 이름 확인')]]);
+  assert.deepEqual(outputs('같은 이름 확인'), [[link('쓰기 결과 표시')], [link('페이지 만들기')]]);
+  assert.deepEqual(outputs('페이지 만들기'), [[link('페이지 다시 읽기')]]);
+  assert.deepEqual(outputs('페이지 다시 읽기'), [[link('내용 대조')]]);
+  assert.deepEqual(outputs('내용 대조'), [[link('쓰기 결과 표시')]]);
+  assert.deepEqual(outputs('기한 초과 알림 만들기'), [[link('기한 초과 알림')]]);
+
+  const condition = (name) => nodeOf(name).parameters.conditions.conditions.map((c) => [c.leftValue, c.operator]);
+  const isTrue = { type: 'boolean', operation: 'true', singleValue: true };
+  assert.deepEqual(condition('긴 초안 확인'), [['={{ $json.attach }}', isTrue]]);
+  assert.deepEqual(condition('기한 초과 확인'), [["={{ $json.outcome === 'timeout' }}", isTrue]]);
+  assert.deepEqual(condition('승인·거절 확인'), [["={{ ['approve', 'reject'].includes($json.outcome) }}", isTrue]]);
+  assert.deepEqual(condition('수정 확인'), [["={{ $json.outcome === 'edited' }}", isTrue]]);
+  assert.deepEqual(condition('같은 이름 확인'), [['={{ $json.duplicate }}', isTrue]]);
 
   const url = '=https://discord.com/api/v10/channels/{{ $json.textChannelId }}/messages';
   const attached = nodeOf('초안 보내기(첨부)');
@@ -883,22 +1091,45 @@ await assert.rejects(afterWait(resumed(null)), /알 수 없는 결정/);
   const plain = nodeOf('초안 보내기');
   assert.deepEqual([plain.parameters.method, plain.parameters.url, plain.parameters.nodeCredentialType], ['POST', url, 'discordBotApi']);
   assert.deepEqual([plain.parameters.specifyBody, plain.parameters.jsonBody], ['json', '={{ JSON.stringify($json.payload) }}']);
-  for (const name of ['초안 보내기(첨부)', '초안 보내기', '기한 초과 알림']) {
+  for (const name of ['수정 반영', '결과 표시', '쓰기 결과 표시']) {
+    assert.deepEqual([nodeOf(name).parameters.method, nodeOf(name).parameters.url], ['PATCH', `${url}/{{ $json.messageId }}`]);
+    assert.equal(nodeOf(name).retryOnFail, true, `${name}은 같은 내용으로 고치는 것이라 다시 보낸다`);
+  }
+  // 다시 보내면 메시지나 페이지가 두 개 생길 수 있는 요청은 재시도하지 않는다.
+  for (const name of ['초안 보내기(첨부)', '초안 보내기', '기한 초과 알림', '페이지 만들기']) {
     assert.equal(nodeOf(name).retryOnFail, undefined, `${name}은 다시 보내지 않는다`);
   }
-  assert.equal(nodeOf('결과 표시').parameters.method, 'PATCH');
-  assert.equal(nodeOf('결과 표시').parameters.url, '=https://discord.com/api/v10/channels/{{ $json.textChannelId }}/messages/{{ $json.messageId }}');
-  assert.equal(nodeOf('결과 표시').retryOnFail, true);
 
   const wait = nodeOf('승인 기다리기');
   assert.equal(wait.type, 'n8n-nodes-base.wait');
   assert.deepEqual(wait.parameters, {
-    resume: 'webhook', httpMethod: 'POST', responseMode: 'onReceived',
+    resume: 'webhook', httpMethod: 'POST', responseMode: 'responseNode',
     limitWaitTime: true, limitType: 'afterTimeInterval', resumeAmount: 3, resumeUnit: 'days', options: {},
   });
+  const respond = nodeOf('결정 응답');
+  assert.deepEqual([respond.type, respond.typeVersion], ['n8n-nodes-base.respondToWebhook', 1.5]);
+  assert.deepEqual(respond.parameters, { respondWith: 'json', responseBody: '={{ JSON.stringify($json.response) }}', options: {} });
   const short = await buildWorkflow({ approvalWait: { amount: 15, unit: 'seconds' } });
   const shortWait = short.nodes.find((n) => n.name === '승인 기다리기').parameters;
   assert.deepEqual([shortWait.resumeAmount, shortWait.resumeUnit], [15, 'seconds']);
+
+  const doc = 'https://api.clickup.com/api/v3/workspaces/1100370000016776/docs/z8rzdfhxc8-98';
+  const listing = nodeOf('페이지 목록 읽기');
+  assert.deepEqual([listing.parameters.method, listing.parameters.url, listing.parameters.nodeCredentialType], ['GET', `${doc}/page_listing`, 'clickUpApi']);
+  assert.deepEqual([listing.alwaysOutputData, listing.retryOnFail], [true, true]);
+  const create = nodeOf('페이지 만들기');
+  assert.deepEqual([create.parameters.method, create.parameters.url, create.parameters.jsonBody], ['POST', `${doc}/pages`, '={{ JSON.stringify($json.request) }}']);
+  const readBack = nodeOf('페이지 다시 읽기');
+  assert.equal(readBack.parameters.url, `=${doc}/pages/{{ $json.id }}`);
+  assert.deepEqual(readBack.parameters.queryParameters.parameters, [{ name: 'content_format', value: 'text/md' }]);
+  assert.equal(readBack.retryOnFail, true);
+
+  // 상위 페이지 ID는 빌드 상수(`회의록` 페이지)이고, 빌드 옵션으로 바꿀 수 있다(E2E와 테스트).
+  assert.match(nodeOf('쓰기 준비').parameters.jsCode, /^const CLICKUP = \{"workspaceId":"1100370000016776","docId":"z8rzdfhxc8-98","parentPageId":"z8rzdfhxc8-38"\};/);
+  assert.ok(clickupWorkflow.nodes.find((n) => n.name === '내용 대조').parameters.jsCode.includes(`"parentPageId":"${PARENT}"`));
+  // 수정 검증과 초안 검증은 같은 규칙 코드(shared/draft-rules.js)를 쓴다.
+  const rules = await readFile(new URL('../workflows/src/shared/draft-rules.js', import.meta.url), 'utf8');
+  for (const name of ['초안 검증', '결정 읽기']) assert.ok(nodeOf(name).parameters.jsCode.includes(rules), `${name}에 같은 검증 규칙이 있다`);
 }
 
 console.log('회의 녹취 워크플로 오프라인 테스트 통과');

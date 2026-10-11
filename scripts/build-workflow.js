@@ -17,6 +17,12 @@ const CLICKUP_BASE = 'https://api.clickup.com/api/v3';
 // 회의록 템플릿 페이지(설계 5절 E). 워크스페이스·문서·페이지 ID는 코드 상수로 둔다(2026-10-11 사용자 결정).
 const TEMPLATE_PAGE = 'workspaces/1100370000016776/docs/z8rzdfhxc8-2398/pages/z8rzdfhxc8-4718';
 
+// 승인된 회의록을 쓰는 곳(설계 5절 H). `회의록` 페이지 바로 아래에 쓴다(2026-10-11 사용자 결정). 빼면 문서 최상위 페이지가 되어
+// 수집기가 회의록으로 보지 않는다. 비어 있으면 쓰기 준비 노드가 실패해 아무것도 쓰지 않는다.
+const CLICKUP_WORKSPACE = '1100370000016776';
+const MINUTES_DOC = 'z8rzdfhxc8-98';
+const MINUTES_PARENT_PAGE = 'z8rzdfhxc8-38'; // `회의록`
+
 // Discord 메시지 ID는 길이가 다를 수 있어 길이부터 비교한다. 받은 메시지 중 가장 큰 ID를 다음 after로 쓴다.
 // n8n 2.42.6은 첫 요청 전에도 이 식을 계산하고(그때는 응답이 없다), 오류 응답은 본문이 배열이 아니다.
 // 식이 깨지면 n8n이 페이지 넘김을 멈추고 오류 본문을 출력으로 내므로(E2E에서 확인) 배열이 아닐 때도 계산되게 하고,
@@ -32,6 +38,11 @@ const CREDENTIAL_TYPES = { 'n8n-nodes-base.discord': 'discordBotApi' };
 export const credentialTypeOf = (node) => node.parameters.nodeCredentialType ?? CREDENTIAL_TYPES[node.type];
 
 const readCode = (name) => readFile(path.join(ROOT, 'workflows/src', `${name}.js`), 'utf8');
+// 근거 검증 규칙(shared/draft-rules.js)을 노드 코드 앞에 붙인다. 초안 검증과 수정 검증이 같은 규칙을 쓴다.
+// 여러 Code 노드가 같이 쓰는 코드(workflows/src/shared)와 상수를 노드 코드 앞에 붙인다. n8n Code 노드는 다른 파일을 가져올 수 없다.
+const withShared = async (name, shared, prefix = '') =>
+  [prefix, ...(await Promise.all(shared.map((s) => readCode(`shared/${s}`)))), await readCode(name)].filter(Boolean).join('\n');
+const withDraftRules = (name) => withShared(name, ['draft-rules']);
 
 // 화면 위치. n8n(executionOrder v1)은 한 노드에서 갈라진 갈래를 화면 위쪽부터 하나씩 끝까지 실행하므로 위치가 실행 순서를 정한다.
 // 결정 메시지 갈래를 위에 두어 Discord 쪽이 실패하면 음성 인식(유료) 전에 멈춘다(2026-10-11 사용자 결정: 병렬 갈래 + Merge).
@@ -59,9 +70,24 @@ const POSITIONS = {
   '초안 보내기': [4080, 120],
   '승인 기다리기': [4320, 0],
   '결정 읽기': [4560, 0],
-  '결과 표시': [4800, 0],
-  '기한 초과 알림 만들기': [5040, 0],
-  '기한 초과 알림': [5280, 0],
+  '기한 초과 확인': [4800, 0],
+  '결정 응답': [5040, 120],
+  '승인·거절 확인': [5280, 120],
+  '수정 확인': [5520, 240],
+  '수정 반영 만들기': [5760, 240],
+  '수정 반영': [6000, 240],
+  '결과 표시': [5520, -120],
+  // 결과 표시 뒤 두 갈래: 위가 ClickUp 쓰기(승인일 때만), 아래가 기한 초과 알림(기한 초과일 때만)
+  '쓰기 준비': [5760, -240],
+  '기한 초과 알림 만들기': [5760, -60],
+  '기한 초과 알림': [6000, -60],
+  '페이지 목록 읽기': [6000, -240],
+  '쓰기 판단': [6240, -240],
+  '같은 이름 확인': [6480, -240],
+  '페이지 만들기': [6720, -180],
+  '페이지 다시 읽기': [6960, -180],
+  '내용 대조': [7200, -180],
+  '쓰기 결과 표시': [7440, -240],
 };
 
 // [보내는 노드, 받는 노드, 받는 입력 번호, 보내는 출력 번호]. If 노드는 출력 0이 참, 1이 거짓이다.
@@ -90,8 +116,28 @@ const EDGES = [
   ['초안 보내기(첨부)', '승인 기다리기'],
   ['초안 보내기', '승인 기다리기'],
   ['승인 기다리기', '결정 읽기'],
-  ['결정 읽기', '결과 표시'],
+  // 기한 초과는 응답할 요청이 없어 바로 결과 표시로 간다. 그 밖에는 녹음 봇에 먼저 응답한다.
+  ['결정 읽기', '기한 초과 확인'],
+  ['기한 초과 확인', '결과 표시', 0, 0],
+  ['기한 초과 확인', '결정 응답', 0, 1],
+  ['결정 응답', '승인·거절 확인'],
+  ['승인·거절 확인', '결과 표시', 0, 0],
+  ['승인·거절 확인', '수정 확인', 0, 1],
+  // 고친 초안이 통과하면 같은 메시지를 고친 뒤, 이미 바뀐 판이거나 검증에 실패하면 그대로 다시 기다린다.
+  ['수정 확인', '수정 반영 만들기', 0, 0],
+  ['수정 확인', '승인 기다리기', 0, 1],
+  ['수정 반영 만들기', '수정 반영'],
+  ['수정 반영', '승인 기다리기'],
+  ['결과 표시', '쓰기 준비'],
   ['결과 표시', '기한 초과 알림 만들기'],
+  ['쓰기 준비', '페이지 목록 읽기'],
+  ['페이지 목록 읽기', '쓰기 판단'],
+  ['쓰기 판단', '같은 이름 확인'],
+  ['같은 이름 확인', '쓰기 결과 표시', 0, 0],
+  ['같은 이름 확인', '페이지 만들기', 0, 1],
+  ['페이지 만들기', '페이지 다시 읽기'],
+  ['페이지 다시 읽기', '내용 대조'],
+  ['내용 대조', '쓰기 결과 표시'],
   ['기한 초과 알림 만들기', '기한 초과 알림'],
 ];
 
@@ -127,7 +173,42 @@ const http = (name, parameters, settings = {}) => ({
 
 const credential = (type) => ({ authentication: 'predefinedCredentialType', nodeCredentialType: type });
 
-export async function buildWorkflow({ openaiBase = OPENAI_BASE, clickupBase = CLICKUP_BASE, approvalWait = APPROVAL_WAIT } = {}) {
+/** 참이면 출력 0, 거짓이면 출력 1로 보내는 If 노드. 조건은 불리언 식 하나다. */
+const ifNode = (name, expression, id) => ({
+  parameters: {
+    conditions: {
+      options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 3 },
+      conditions: [{ id, leftValue: `={{ ${expression} }}`, rightValue: '', operator: { type: 'boolean', operation: 'true', singleValue: true } }],
+      combinator: 'and',
+    },
+    options: {},
+  },
+  name,
+  type: 'n8n-nodes-base.if',
+  typeVersion: 2.3,
+});
+
+export async function buildWorkflow({
+  openaiBase = OPENAI_BASE,
+  clickupBase = CLICKUP_BASE,
+  approvalWait = APPROVAL_WAIT,
+  minutesParentPage = MINUTES_PARENT_PAGE,
+} = {}) {
+  const clickup = `const CLICKUP = ${JSON.stringify({ workspaceId: CLICKUP_WORKSPACE, docId: MINUTES_DOC, parentPageId: minutesParentPage })};`;
+  const minutesDoc = `${clickupBase}/workspaces/${CLICKUP_WORKSPACE}/docs/${MINUTES_DOC}`;
+  const discordPatch = (name) => http(
+    name,
+    {
+      method: 'PATCH',
+      url: `=${DISCORD_BASE}/channels/{{ $json.textChannelId }}/messages/{{ $json.messageId }}`,
+      ...credential('discordBotApi'),
+      sendBody: true,
+      specifyBody: 'json',
+      jsonBody: '={{ JSON.stringify($json.body) }}',
+    },
+    // 같은 내용으로 고치는 것이라 다시 보내도 안전하다.
+    { retryOnFail: true, maxTries: 3, waitBetweenTries: 5000 },
+  );
   const meeting = "$('녹음 정보 확인').first().json";
   const nodes = place([
     {
@@ -244,7 +325,7 @@ export async function buildWorkflow({ openaiBase = OPENAI_BASE, clickupBase = CL
       // (2026-10-11 사용자 결정: 3번 유지).
       { retryOnFail: true, maxTries: 3, waitBetweenTries: 5000 },
     ),
-    code('초안 검증', await readCode('draft-check')),
+    code('초안 검증', await withDraftRules('draft-check')),
     code('알림 만들기', await readCode('notice')),
     {
       // 녹취와 결정 메시지 원문은 보내지 않는다. Discord 노드에는 멘션을 끄는 옵션이 없어서, 알림 문구를 코드가 만든 회의 ID와 숫자로만 채운다.
@@ -262,26 +343,9 @@ export async function buildWorkflow({ openaiBase = OPENAI_BASE, clickupBase = CL
       type: 'n8n-nodes-base.discord',
       typeVersion: 2,
     },
-    code('초안 메시지 만들기', await readCode('approval-message')),
-    {
-      // 4,096자를 넘는 초안만 .md 파일을 붙여 보낸다. HTTP 노드 4.2의 multipart는 파일 필드를 비워 건너뛸 수 없어서(E2E에서 확인) 노드를 나눈다.
-      parameters: {
-        conditions: {
-          options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 3 },
-          conditions: [{
-            id: 'b7f3c0de-5a1e-4c2b-9d3f-1e2a3b4c5d6e',
-            leftValue: '={{ $json.attach }}',
-            rightValue: '',
-            operator: { type: 'boolean', operation: 'true', singleValue: true },
-          }],
-          combinator: 'and',
-        },
-        options: {},
-      },
-      name: '긴 초안 확인',
-      type: 'n8n-nodes-base.if',
-      typeVersion: 2.3,
-    },
+    code('초안 메시지 만들기', await withShared('approval-message', ['approval-buttons'])),
+    // 4,096자를 넘는 초안만 .md 파일을 붙여 보낸다. HTTP 노드 4.2의 multipart는 파일 필드를 비워 건너뛸 수 없어서(E2E에서 확인) 노드를 나눈다.
+    ifNode('긴 초안 확인', '$json.attach', 'b7f3c0de-5a1e-4c2b-9d3f-1e2a3b4c5d6e'),
     // 초안에 녹취·채팅 문장이 들어가므로 멘션을 끌 수 있는 HTTP 노드로 보낸다(Discord 노드에는 allowed_mentions가 없다).
     // 다시 보내면 초안이 두 번 올라갈 수 있어 두 노드 모두 재시도하지 않는다.
     http('초안 보내기(첨부)', {
@@ -306,11 +370,12 @@ export async function buildWorkflow({ openaiBase = OPENAI_BASE, clickupBase = CL
       jsonBody: '={{ JSON.stringify($json.payload) }}',
     }),
     {
-      // 녹음 봇이 버튼 클릭을 재개 주소로 보낼 때까지 기다린다. 기한이 지나면 받은 메시지를 그대로 넘긴다.
+      // 녹음 봇이 버튼 클릭을 재개 주소로 보낼 때까지 기다린다. 기한이 지나면 받은 항목을 그대로 넘긴다.
+      // 녹음 봇에는 결정 응답 노드가 판단(받음, 이미 바뀜, 검증 실패)을 답한다. 다시 기다릴 때마다 기한이 새로 시작된다.
       parameters: {
         resume: 'webhook',
         httpMethod: 'POST',
-        responseMode: 'onReceived',
+        responseMode: 'responseNode',
         limitWaitTime: true,
         limitType: 'afterTimeInterval',
         resumeAmount: approvalWait.amount,
@@ -322,20 +387,51 @@ export async function buildWorkflow({ openaiBase = OPENAI_BASE, clickupBase = CL
       typeVersion: 1.1,
       webhookId: '0d0b6a7e-3c1f-4f55-9a3e-6f1c2b8e5d40',
     },
-    code('결정 읽기', await readCode('approval-result')),
+    code('결정 읽기', await withShared('approval-result', ['draft-rules', 'approval-buttons'])),
+    ifNode('기한 초과 확인', "$json.outcome === 'timeout'", '5e0f7a3c-1d2b-4c8e-9f60-2a1b3c4d5e01'),
+    {
+      // 녹음 봇의 재개 요청에 판단을 JSON으로 답한다(n8n 2.42.6 실험). 승인은 ClickUp 쓰기를 기다리지 않고 먼저 답한다.
+      parameters: { respondWith: 'json', responseBody: '={{ JSON.stringify($json.response) }}', options: {} },
+      name: '결정 응답',
+      type: 'n8n-nodes-base.respondToWebhook',
+      typeVersion: 1.5,
+    },
+    ifNode('승인·거절 확인', "['approve', 'reject'].includes($json.outcome)", '5e0f7a3c-1d2b-4c8e-9f60-2a1b3c4d5e02'),
+    ifNode('수정 확인', "$json.outcome === 'edited'", '5e0f7a3c-1d2b-4c8e-9f60-2a1b3c4d5e03'),
+    code('수정 반영 만들기', await withShared('approval-edit', ['approval-buttons'])),
+    discordPatch('수정 반영'),
+    discordPatch('결과 표시'),
+    code('쓰기 준비', await withShared('clickup-prepare', [], clickup)),
     http(
-      '결과 표시',
+      '페이지 목록 읽기',
+      { method: 'GET', url: `${minutesDoc}/page_listing`, ...credential('clickUpApi') },
+      // 읽기라 다시 보내도 안전하다. 목록이 비어도 쓰기 판단이 돌아 상위 페이지가 없다고 멈추게 한다.
+      { alwaysOutputData: true, retryOnFail: true, maxTries: 3, waitBetweenTries: 5000 },
+    ),
+    code('쓰기 판단', await readCode('clickup-dedupe')),
+    ifNode('같은 이름 확인', '$json.duplicate', '5e0f7a3c-1d2b-4c8e-9f60-2a1b3c4d5e04'),
+    // 쓰기 요청은 재시도하지 않는다. 응답을 못 받고 다시 보내면 페이지가 두 개 생길 수 있다(설계 5절 H).
+    http('페이지 만들기', {
+      method: 'POST',
+      url: `${minutesDoc}/pages`,
+      ...credential('clickUpApi'),
+      sendBody: true,
+      specifyBody: 'json',
+      jsonBody: '={{ JSON.stringify($json.request) }}',
+    }),
+    http(
+      '페이지 다시 읽기',
       {
-        method: 'PATCH',
-        url: `=${DISCORD_BASE}/channels/{{ $json.textChannelId }}/messages/{{ $json.messageId }}`,
-        ...credential('discordBotApi'),
-        sendBody: true,
-        specifyBody: 'json',
-        jsonBody: '={{ JSON.stringify($json.body) }}',
+        method: 'GET',
+        url: `=${minutesDoc}/pages/{{ $json.id }}`,
+        ...credential('clickUpApi'),
+        sendQuery: true,
+        queryParameters: { parameters: [{ name: 'content_format', value: 'text/md' }] },
       },
-      // 같은 내용으로 고치는 것이라 다시 보내도 안전하다.
       { retryOnFail: true, maxTries: 3, waitBetweenTries: 5000 },
     ),
+    code('내용 대조', await withShared('clickup-verify', [], clickup)),
+    discordPatch('쓰기 결과 표시'),
     code('기한 초과 알림 만들기', await readCode('approval-timeout')),
     http(
       '기한 초과 알림',

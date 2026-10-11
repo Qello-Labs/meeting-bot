@@ -92,20 +92,37 @@ const isDraftPost = (r) => isPost(r) && Array.isArray(payloadOf(r)?.components);
 const isPatch = (r) => r.method === 'PATCH' && /^\/discord\/channels\/\d+\/messages\/\d+$/.test(r.path);
 
 /** 녹음 봇의 버튼 처리 코드로 실제 n8n 재개 주소를 부른다. Discord 상호작용만 흉내 내고, 누른 사람에게 보인 답을 돌려준다. */
-async function click(customId, user = {}) {
+async function click(customId, user = {}, { embed, submit } = {}) {
   const replies = [];
   const interaction = {
     customId,
     user: { bot: false, username: 'doyeon', globalName: '도연', ...user },
     deferred: false,
-    isButton: () => true,
+    message: { embeds: embed === undefined ? [] : [{ description: embed }] },
+    fields: { getTextInputValue: () => submit },
+    isButton: () => submit === undefined,
+    isModalSubmit: () => submit !== undefined,
     async deferReply() { this.deferred = true; },
+    async reply(options) { replies.push(options.content); },
+    async showModal(modal) { replies.push(modal); },
     async editReply(text) { replies.push(text); },
   };
   await handleApprovalButton(interaction, { webhookUrl: `${N8N}/webhook/meeting-ended` });
   return replies;
 }
-const TEMPLATE_PAGE = /^\/clickup\/api\/v3\/workspaces\/[^/]+\/docs\/[^/]+\/pages\/[^/]+$/;
+const accepted = (label) => [`${label}했습니다. 회의 채널의 초안 메시지에 결과가 표시됩니다.`];
+const INVALID_BUTTON = ['이미 처리됐거나 유효하지 않은 버튼입니다.'];
+const settled = (text) => ({ content: `회의 20261014-1400 회의록 초안: ${text}`, components: [], allowed_mentions: { parse: [] } });
+const buttonIds = (components) => components[0].components.map((b) => b.custom_id);
+
+// 승인된 회의록을 쓰는 가짜 ClickUp 상위 페이지(회의록 문서 안의 테스트 페이지 역할)
+const MINUTES_PARENT = 'z8rzdfhxc8-e2e01';
+const MINUTES = /^\/clickup\/api\/v3\/workspaces\/1100370000016776\/docs\/z8rzdfhxc8-98\//;
+const isMinutes = (method, tail) => (r) => r.method === method && MINUTES.test(r.path) && tail.test(r.path);
+const isListing = isMinutes('GET', /\/page_listing$/);
+const isCreate = isMinutes('POST', /\/pages$/);
+const isReadBack = isMinutes('GET', /\/pages\/[^/]+$/);
+const TEMPLATE_PAGE = /^\/clickup\/api\/v3\/workspaces\/[^/]+\/docs\/z8rzdfhxc8-2398\/pages\/[^/]+$/;
 const DRAFT = /^\/openai\/responses$/;
 
 // 회의 채널 메시지(가짜). 기간 안 230개(✅ 사람 3개, ✅ 봇·Webhook 각 1개), 기간 전 1개, 회의 뒤 30개라 100·100·60개로 세 번 받는다.
@@ -134,6 +151,7 @@ const post = (control, json) =>
   fetch(`${MOCK}/${control}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(json ?? {}) });
 const setTemplate = (content) => post('__template', { content });
 const setDraft = (body, status = 200) => post('__llm', { status, body });
+const setMinutes = () => post('__minutes', { parentPageId: MINUTES_PARENT });
 const linkOf = (m) => `https://discord.com/channels/${manifest.guildId}/${CHANNEL}/${m.id}`;
 
 /** GPT가 채운 것처럼 쓴 초안. 근거는 녹취 발화 시각과 수집한 ✅ 메시지 링크다. time을 바꾸면 근거가 틀린 초안이 된다. */
@@ -229,6 +247,7 @@ async function prepare() {
     openaiBase: 'http://mock:8080/openai',
     clickupBase: 'http://mock:8080/clickup/api/v3',
     approvalWait: { amount: 30, unit: 'seconds' },
+    minutesParentPage: MINUTES_PARENT,
   });
   for (const node of workflow.nodes) {
     const type = credentialTypeOf(node);
@@ -302,12 +321,15 @@ async function readExecutions(workflowId) {
   }
   const db = new DatabaseSync(path.join(copy, 'database.sqlite'));
   try {
-    return db
+    return {
+      staticData: JSON.parse(db.prepare('SELECT staticData FROM workflow_entity WHERE id = ?').get(workflowId).staticData ?? '{}'),
+      executions: db
       .prepare(
         `SELECT e.id, e.status, d.data FROM execution_entity e JOIN execution_data d ON d.executionId = e.id
          WHERE e.workflowId = ? ORDER BY e.id`,
       )
-      .all(workflowId);
+      .all(workflowId),
+    };
   } finally {
     db.close();
   }
@@ -390,23 +412,65 @@ try {
   assert.equal(payload.content, '회의 20261014-1400 회의록 초안입니다. 3일 안에 승인 또는 거절을 눌러 주세요.');
   assert.deepEqual(payload.allowed_mentions, { parse: [] });
   assert.ok(payload.embeds[0].description.includes('| 참석자 | 도연, 참석자 2 |'));
-  const [approveId, rejectId] = payload.components[0].components.map((b) => b.custom_id);
-  assert.match(approveId, /^mb:approve:\d+:[0-9a-f]{64}$/);
-  assert.match(rejectId, /^mb:reject:\d+:[0-9a-f]{64}$/);
+  const [approveId, editId, rejectId] = buttonIds(payload.components);
+  assert.match(approveId, /^mb:approve:\d+:1:[0-9a-f]{64}$/);
+  assert.match(editId, /^mb:edit:\d+:1:[0-9a-f]{64}$/);
+  assert.match(rejectId, /^mb:reject:\d+:1:[0-9a-f]{64}$/);
 
-  step('1회차 버튼: 틀린 서명과 봇 계정 클릭은 실행을 바꾸지 않고, 승인하면 버튼이 꺼지며, 끝난 실행은 다시 재개되지 않는다');
-  assert.deepEqual(await click(approveId.replace(/[0-9a-f]{64}$/, '0'.repeat(64))), ['이미 처리됐거나 유효하지 않은 버튼입니다.']);
+  step('1회차 버튼: 틀린 서명과 봇 계정 클릭은 실행을 바꾸지 않는다');
+  await setMinutes();
+  assert.deepEqual(await click(approveId.replace(/[0-9a-f]{64}$/, '0'.repeat(64))), INVALID_BUTTON);
   assert.deepEqual(await click(approveId, { bot: true }), []);
   await sleep(1_500);
   assert.equal((await mockRequests()).filter(isPatch).length, 0, '틀린 서명과 봇 클릭으로는 재개되지 않는다');
-  assert.deepEqual(await click(approveId), ['승인했습니다. 회의 채널의 초안 메시지에 결과가 표시됩니다.']);
-  const approved = await waitFor('결과 표시', async () => (await mockRequests()).find(isPatch));
-  assert.match(approved.path, new RegExp(`^/discord/channels/${CHANNEL}/messages/\\d+$`));
-  assert.deepEqual(approved.json, { content: '회의 20261014-1400 회의록 초안: 승인(도연)', components: [], allowed_mentions: { parse: [] } });
-  assert.deepEqual(await click(rejectId), ['이미 처리됐거나 유효하지 않은 버튼입니다.'], '끝난 실행(409)');
+
+  step('1회차 수정: 모달을 열고, 근거가 틀린 수정은 반영하지 않으며, 통과한 수정은 같은 메시지를 2판으로 바꾼다');
+  const original = payload.embeds[0].description;
+  const [modal] = await click(editId, {}, { embed: original });
+  assert.equal(modal.custom_id, editId, '모달 ID는 버튼 ID와 같다');
+  assert.equal(modal.components[0].components[0].value, original, '모달을 지금 초안으로 채운다');
+  assert.deepEqual(await click(editId, {}, { submit: original.replace('녹취 00:00:12', '녹취 00:00:20') }), [
+    '고친 초안이 근거 검증을 통과하지 못해 반영하지 않았습니다(녹취에 없는 시각 1개). 고치기 전 초안이 그대로 있습니다.',
+  ]);
+  await sleep(1_500);
+  assert.equal((await mockRequests()).filter(isPatch).length, 0, '검증에 실패한 수정은 메시지를 바꾸지 않는다');
+  // 링크가 아닌 대괄호를 넣어, ClickUp이 \[ \]로 바꿔 저장해도 대조가 같다고 보는지 확인한다.
+  const edited = original.replace('배포는 금요일에 한다.', '배포는 [금요일] 오후에 한다.');
+  assert.deepEqual(await click(editId, { globalName: '민수' }, { submit: edited }), accepted('수정'));
+  const editPatch = await waitFor('수정 반영', async () => (await mockRequests()).find(isPatch));
+  assert.equal(editPatch.json.content, '회의 20261014-1400 회의록 초안입니다(수정: 민수). 3일 안에 승인 또는 거절을 눌러 주세요.');
+  assert.equal(editPatch.json.embeds[0].description, edited);
+  assert.deepEqual(editPatch.json.allowed_mentions, { parse: [] });
+  const [approve2, edit2, reject2] = buttonIds(editPatch.json.components);
+  assert.match(approve2, /^mb:approve:\d+:2:[0-9a-f]{64}$/);
+  assert.match(edit2, /^mb:edit:\d+:2:[0-9a-f]{64}$/);
+
+  step('1회차 늦은 클릭: 1판 버튼은 반영되지 않고, 2판 승인으로 ClickUp 테스트 페이지에 쓰고 대조한다');
+  assert.deepEqual(await click(approveId), ['그 사이 초안이 바뀌었습니다. 회의 채널의 최신 초안 메시지에서 다시 눌러 주세요.']);
+  await sleep(1_500);
+  assert.equal((await mockRequests()).filter(isPatch).length, 1, '1판 승인은 메시지를 바꾸지 않는다');
+  assert.deepEqual(await click(approve2), accepted('승인'));
+  const written = await waitFor('ClickUp 쓰기 결과', async () => {
+    const requests = await mockRequests();
+    return requests.filter(isPatch).length >= 3 ? requests : null;
+  });
+  const [, approvedPatch, writtenPatch] = written.filter(isPatch);
+  assert.deepEqual(approvedPatch.json, settled('승인(도연). ClickUp에 쓰는 중입니다'));
+  assert.equal(written.filter(isListing).length, 1);
+  const [createCall] = written.filter(isCreate);
+  assert.equal(createCall.authorization, 'dummy-e2e-clickup');
+  assert.deepEqual(Object.keys(createCall.json).sort(), ['content', 'content_format', 'name', 'parent_page_id']);
+  assert.deepEqual([createCall.json.parent_page_id, createCall.json.name, createCall.json.content_format], [MINUTES_PARENT, '2026-10-14 정기 회의', 'text/md']);
+  assert.ok(createCall.json.content.includes('배포는 [금요일] 오후에 한다.'), '고친 초안을 쓴다');
+  assert.equal(written.filter(isReadBack).length, 1);
+  const pageLink = 'https://app.clickup.com/1100370000016776/v/dc/z8rzdfhxc8-98/z8rzdfhxc8-7000';
+  assert.deepEqual(writtenPatch.json, settled(`승인(도연). ClickUp에 썼습니다: ${pageLink}`), '목록 기호 차이는 같은 것으로 본다');
+  assert.ok(written.indexOf(approvedPatch) < written.indexOf(createCall), '승인을 표시한 뒤 쓴다');
+  assert.deepEqual(await click(reject2), INVALID_BUTTON, '끝난 실행(409)');
   await sleep(1_500);
   const afterFirst = await mockRequests();
-  assert.equal(afterFirst.filter(isPatch).length, 1);
+  assert.equal(afterFirst.filter(isPatch).length, 3);
+  assert.equal(afterFirst.filter(isCreate).length, 1);
   assert.equal(afterFirst.filter(isPost).length, 2, '승인하면 기한 초과 알림을 보내지 않는다');
 
   step('2회차: 녹음 폴더가 없으면 음성 인식과 알림 없이 실패');
@@ -436,7 +500,7 @@ try {
   assert.ok(longPayload.embeds[0].description.endsWith('…(전체는 첨부한 .md 파일에 있습니다)'));
   const longReject = longPayload.components[0].components[1].custom_id;
   assert.deepEqual(await click(longReject, { globalName: null, username: 'minsu' }), ['거절했습니다. 회의 채널의 초안 메시지에 결과가 표시됩니다.']);
-  const rejected = await waitFor('거절 표시', async () => (await mockRequests()).filter(isPatch)[1]);
+  const rejected = await waitFor('거절 표시', async () => (await mockRequests()).slice(afterFirst.length).find(isPatch));
   assert.deepEqual(rejected.json, { content: '회의 20261014-1400 회의록 초안: 거절(minsu)', components: [], allowed_mentions: { parse: [] } });
   const retried = byPath(fifth, TRANSCRIBE);
   assert.equal(retried.filter((r) => r.status === 500).length, 1);
@@ -535,7 +599,20 @@ try {
   });
   assert.ok(twelfth.indexOf(timedOutPost) < twelfth.indexOf(timedOutPatch));
   const lateClick = payloadOf(timedOutPost).components[0].components[0].custom_id;
-  assert.deepEqual(await click(lateClick), ['이미 처리됐거나 유효하지 않은 버튼입니다.'], '기한이 지난 버튼');
+  assert.deepEqual(await click(lateClick), INVALID_BUTTON, '기한이 지난 버튼');
+
+  step('13회차: 같은 회의를 다시 승인하면 같은 이름의 페이지가 있어 쓰지 않고 메시지에 알린다');
+  const beforeThirteenth = (await mockRequests()).length;
+  await meetingEnded(manifest);
+  const thirteenthDraft = await waitFor('초안 메시지', async () => (await mockRequests()).slice(beforeThirteenth).find(isDraftPost));
+  assert.deepEqual(await click(buttonIds(payloadOf(thirteenthDraft).components)[0]), accepted('승인'));
+  const thirteenth = await waitFor('같은 이름 알림', async () => {
+    const requests = (await mockRequests()).slice(beforeThirteenth);
+    return requests.filter(isPatch).length >= 2 ? requests : null;
+  });
+  assert.deepEqual(thirteenth.filter(isPatch)[1].json, settled('승인(도연). ClickUp에 같은 이름(2026-10-14 정기 회의)의 페이지가 있어 쓰지 않았습니다'));
+  assert.equal(thirteenth.filter(isListing).length, 1);
+  assert.equal(thirteenth.filter(isCreate).length, 0, '같은 이름이 있으면 쓰지 않는다');
 
   step('n8n에서 내보낸 워크플로가 가져온 것과 동작이 같은지 차이 검사');
   await compose('exec', '-T', 'n8n', 'n8n', 'export:workflow', `--id=${workflow.id}`, '--output=/home/node/.n8n/exported.json');
@@ -543,11 +620,13 @@ try {
   assert.deepEqual(diffWorkflows(workflow, exported), []);
 
   step('n8n 실행 기록 확인');
-  const executions = await readExecutions(workflow.id);
+  const { executions, staticData } = await readExecutions(workflow.id);
+  // 회의록을 쓴 뒤 다음 회의의 결정 메시지는 이번 회의 종료 뒤부터 모은다.
+  assert.equal(staticData.global?.lastMeetingEndedAt, manifest.endedAt);
   assert.deepEqual(executions.map((e) => e.status), [
-    'success', 'error', 'error', 'error', 'success', 'error', 'error', 'success', 'error', 'error', 'error', 'success',
+    'success', 'error', 'error', 'error', 'success', 'error', 'error', 'success', 'error', 'error', 'error', 'success', 'success',
   ]);
-  const [ok, noFolder, oneMissing, badId, rejectedRun, fetchFailed, blank, badEvidence, truncated, refused, noTemplate, timedOut] =
+  const [ok, noFolder, oneMissing, badId, rejectedRun, fetchFailed, blank, badEvidence, truncated, refused, noTemplate, timedOut, duplicated] =
     executions.map((e) => e.data);
   for (const line of [
     '[00:00:03] 참석자 2: 3초 발화',
@@ -584,10 +663,18 @@ try {
   for (const data of [truncated, refused]) assert.equal(unflatten(data).resultData.lastNodeExecuted, '초안 검증');
   assert.equal(unflatten(noTemplate).resultData.lastNodeExecuted, '템플릿 읽기', '템플릿 조회 실패는 템플릿 읽기에서 멈춘다');
   // 승인 기다리기가 재개된 이유가 실행 기록에 남는다. 검증에 실패한 초안은 승인 메시지를 만들지 않았다.
-  const decisionOf = (data) => nodeOutput(data, '결정 읽기')[0];
-  assert.deepEqual([decisionOf(ok).decision, decisionOf(ok).by], ['approve', '도연']);
-  assert.deepEqual([decisionOf(rejectedRun).decision, decisionOf(rejectedRun).by], ['reject', 'minsu']);
-  assert.deepEqual([decisionOf(timedOut).decision, decisionOf(timedOut).by], ['timeout', null]);
+  // 결정 읽기는 반복될 때마다 실행 기록에 한 번씩 남는다(검증 실패 → 수정 → 옛 판 클릭 → 승인).
+  const outcomesOf = (data) => (unflatten(data).resultData.runData['결정 읽기'] ?? []).map((run) => {
+    const { outcome, by, rev } = run.data.main[0][0].json;
+    return [outcome, by, rev];
+  });
+  assert.deepEqual(outcomesOf(ok), [['editInvalid', '도연', 1], ['edited', '민수', 1], ['stale', '도연', 2], ['approve', '도연', 2]]);
+  assert.deepEqual(outcomesOf(rejectedRun), [['reject', 'minsu', 1]]);
+  assert.deepEqual(outcomesOf(timedOut), [['timeout', null, 1]]);
+  assert.deepEqual(outcomesOf(duplicated), [['approve', '도연', 1]]);
+  const [verified] = nodeOutput(ok, '내용 대조');
+  assert.deepEqual([verified.matched, verified.differentLines], [true, 0]);
+  assert.deepEqual(nodeOutput(duplicated, '내용 대조'), []);
   assert.equal(unflatten(badEvidence).resultData.lastNodeExecuted, '초안 메시지 만들기');
   assert.deepEqual(nodeOutput(badEvidence, '초안 메시지 만들기'), []);
   console.log(`  실행 ${executions.length}건: ${executions.map((e) => e.status).join(', ')}`);
