@@ -35,6 +35,7 @@ const PARAMETER_DEFAULTS = {
     'options.pagination.pagination.parameters.parameters[].type': 'qs',
   },
   'n8n-nodes-base.merge': { chooseBranchMode: 'waitForAll' },
+  'n8n-nodes-base.wait': { responseMode: 'onReceived', limitType: 'afterTimeInterval' },
 };
 
 /** 경로의 값이 없으면 기본값을 채운다. 중간 값이 없으면 아무것도 만들지 않는다. */
