@@ -6,6 +6,8 @@
 //   POST /__messages-fail             메시지 조회가 계속 500을 낸다(조회 실패 확인용). /__messages로 목록을 다시 넣으면 풀린다
 //   POST /__template                  템플릿 페이지 본문을 정한다({ content }). 조회 실패도 풀린다
 //   POST /__template-fail             템플릿 페이지 조회가 계속 500을 낸다
+//   POST /__minutes                   회의록 문서의 상위 페이지를 정한다({ parentPageId }). 만든 페이지는 이 아래에 쌓여 페이지 목록에 나온다
+//   POST /__minutes-alter             다음에 만드는 페이지를 다시 읽을 때 본문 한 줄을 바꿔 준다(대조 확인용)
 //   POST /__llm                       Responses API가 낼 응답을 정한다({ status, body }). 바꿀 때까지 같은 응답을 낸다
 import { readFileSync } from 'node:fs';
 import http from 'node:http';
@@ -16,6 +18,10 @@ let failNext = 0;
 let channelMessages = [];
 let messagesFail = false;
 let templateContent = null;
+// 회의록 문서(가짜): 상위 페이지 아래에 만든 페이지를 쌓는다.
+let minutesParent = null;
+const createdPages = new Map();
+let alterNext = false;
 let templateFail = false;
 let llm = null;
 
@@ -64,7 +70,34 @@ function route(req, path, query, body) {
   if (req.method === 'PATCH' && message) {
     return { status: 200, body: { id: message[2], channel_id: message[1], content: body.json?.content } };
   }
+  const listing = /^\/clickup\/api\/v3\/workspaces\/([^/]+)\/docs\/([^/]+)\/page_listing$/.exec(path);
+  if (req.method === 'GET' && listing) {
+    const children = [...createdPages.values()].map(({ id, name, parent_page_id }) => ({ id, doc_id: listing[2], workspace_id: Number(listing[1]), name, parent_page_id }));
+    return {
+      status: 200,
+      body: [
+        { id: 'z8rzdfhxc8-1', doc_id: listing[2], workspace_id: Number(listing[1]), name: '안내' },
+        { id: 'z8rzdfhxc8-38', doc_id: listing[2], workspace_id: Number(listing[1]), name: '회의록', pages: minutesParent ? [
+          { id: minutesParent, doc_id: listing[2], workspace_id: Number(listing[1]), name: '회의록 테스트', parent_page_id: 'z8rzdfhxc8-38', pages: children },
+        ] : [] },
+      ],
+    };
+  }
+  const create = /^\/clickup\/api\/v3\/workspaces\/([^/]+)\/docs\/([^/]+)\/pages$/.exec(path);
+  if (req.method === 'POST' && create) {
+    const id = `z8rzdfhxc8-${7000 + createdPages.size}`;
+    const { parent_page_id, name, content } = body.json ?? {};
+    // ClickUp처럼 목록 기호를 바꾸고 링크가 아닌 대괄호를 이스케이프해 저장한다(실제 ClickUp에서 확인). 대조는 이런 차이를 같은 것으로 봐야 한다.
+    let stored = String(content ?? '').replace(/^\*   /gm, '- ').replace(/(?<!\\)\[([^\]\n]*)\](?!\()/g, '\\[$1\\]');
+    if (alterNext) stored = stored.replace(/^(- .*?)\.( 이유:)/m, '$1 (바뀜).$2');
+    alterNext = false;
+    createdPages.set(id, { id, name, parent_page_id, content: stored });
+    return { status: 201, body: { id, doc_id: create[2], workspace_id: Number(create[1]), name, parent_page_id, content: stored } };
+  }
   const page = /^\/clickup\/api\/v3\/workspaces\/([^/]+)\/docs\/([^/]+)\/pages\/([^/]+)$/.exec(path);
+  if (req.method === 'GET' && page && createdPages.has(page[3])) {
+    return { status: 200, body: { ...createdPages.get(page[3]), doc_id: page[2], workspace_id: Number(page[1]) } };
+  }
   if (req.method === 'GET' && page) {
     if (templateFail || templateContent === null) return { status: 500, body: { err: 'e2e injected failure' } };
     return { status: 200, body: { id: page[3], doc_id: page[2], workspace_id: page[1], name: '회의록 템플릿', content: templateContent } };
@@ -110,6 +143,14 @@ function handler(prefix) {
         templateContent = body.json?.content ?? null;
         templateFail = false;
         return reply(200, { length: templateContent?.length ?? 0 });
+      }
+      if (url.pathname === '/__minutes') {
+        minutesParent = body.json?.parentPageId ?? null;
+        return reply(200, { minutesParent });
+      }
+      if (url.pathname === '/__minutes-alter') {
+        alterNext = true;
+        return reply(200, { alterNext });
       }
       if (url.pathname === '/__template-fail') {
         templateFail = true;
