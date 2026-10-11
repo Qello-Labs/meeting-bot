@@ -118,8 +118,8 @@ async function handleStop(interaction) {
 }
 
 client.on(Events.InteractionCreate, async (interaction) => {
-  // 회의록 초안의 승인·거절 버튼(n8n이 보낸 메시지)
-  if (interaction.isButton()) {
+  // 회의록 초안의 승인·수정·거절 버튼(n8n이 보낸 메시지)과 수정 모달
+  if (interaction.isButton() || interaction.isModalSubmit()) {
     await handleApprovalButton(interaction, { webhookUrl: config.webhookUrl }).catch((error) => {
       console.error(`승인 버튼 처리 실패: ${error.message}`);
       if (interaction.deferred) interaction.editReply('처리 중 오류가 났습니다. 잠시 뒤 다시 눌러 주세요.').catch(() => {});
