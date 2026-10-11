@@ -56,7 +56,13 @@ function route(req, path, query, body) {
     return { status: 200, body: page };
   }
   if (req.method === 'POST' && /^\/discord\/channels\/\d+\/messages$/.test(path)) {
-    return { status: 200, body: { id: String(requests.length), channel_id: path.split('/')[3], content: body.json?.content } };
+    // 초안 메시지는 multipart(payload_json + 파일)로, 알림은 JSON으로 온다.
+    const payload = body.multipart?.payload_json ? JSON.parse(body.multipart.payload_json) : body.json;
+    return { status: 200, body: { id: String(1_600_000_000_000_000_000n + BigInt(requests.length)), channel_id: path.split('/')[3], content: payload?.content } };
+  }
+  const message = /^\/discord\/channels\/(\d+)\/messages\/(\d+)$/.exec(path);
+  if (req.method === 'PATCH' && message) {
+    return { status: 200, body: { id: message[2], channel_id: message[1], content: body.json?.content } };
   }
   const page = /^\/clickup\/api\/v3\/workspaces\/([^/]+)\/docs\/([^/]+)\/pages\/([^/]+)$/.exec(path);
   if (req.method === 'GET' && page) {
