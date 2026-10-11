@@ -34,6 +34,7 @@ Discord 회의를 말하는 사람별로 녹음하고, n8n 워크플로가 음�
 
 1. [Discord 개발자 포털](https://discord.com/developers/applications)에서 Application을 만들고 Bot 토큰을 발급한다.
 2. Bot 설정에서 **Message Content Intent**를 켠다. 녹음 봇에는 필요 없고, n8n이 같은 토큰으로 회의 채널의 결정 메시지를 읽을 때 필요하다.
+   꺼져 있으면 메시지 내용이 비어 와서 회의 녹취 워크플로가 실패한다.
 3. OAuth2 URL Generator에서 scope는 `bot`, `applications.commands`를 고르고, 권한은 채널 보기, 메시지 보내기, 링크 임베드,
    파일 첨부, 메시지 기록 보기, 연결을 골라 팀 서버에 초대한다. 관리자 권한은 주지 않는다.
 

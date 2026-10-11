@@ -82,6 +82,32 @@ const byPath = (requests, test) => requests.filter((r) => test.test(r.path));
 const TRANSCRIBE = /^\/openai\/audio\/transcriptions$/;
 const DISCORD = /^\/discord\//;
 const DISCORD_POST = /^\/discord\/channels\/\d+\/messages$/;
+const isGet = (r) => r.method === 'GET' && DISCORD_POST.test(r.path);
+const isPost = (r) => r.method === 'POST' && DISCORD_POST.test(r.path);
+
+// 회의 채널 메시지(가짜). 기간 안 230개(✅ 사람 3개, ✅ 봇·Webhook 각 1개), 기간 전 1개, 회의 뒤 30개라 100·100·60개로 세 번 받는다.
+const DISCORD_EPOCH = 1420070400000n;
+const DAY = 24 * 60 * 60 * 1000;
+let sequence = 0;
+const idAt = (ms) => (((BigInt(ms) - DISCORD_EPOCH) << 22n) + BigInt((sequence += 1) % 4096)).toString();
+const human = { id: '500000000000000001', username: 'doyeon', global_name: '도연' };
+const checkmark = [{ emoji: { id: null, name: '✅' }, count: 1, me: false }];
+function channelMessages({ blankDecision = false } = {}) {
+  const start = Date.parse(manifest.startedAt);
+  const end = Date.parse(manifest.endedAt);
+  const from = start - 7 * DAY;
+  const at = (ms, extra = {}) => ({ id: idAt(ms), type: 0, content: '잡담', author: human, attachments: [], reactions: [], ...extra });
+  const inWindow = Array.from({ length: 230 }, (_, i) => at(from + 1 + Math.floor(((end - from) * i) / 230)));
+  inWindow[10] = { ...inWindow[10], content: blankDecision ? '' : '결정 A: 배포는 금요일', reactions: checkmark };
+  inWindow[120] = { ...inWindow[120], content: '결정 B: API v2', reactions: checkmark, type: 19 };
+  inWindow[229] = { ...inWindow[229], content: '결정 C: 회의 중 결정', reactions: checkmark };
+  inWindow[50] = { ...inWindow[50], content: '봇 메시지', reactions: checkmark, author: { id: '600000000000000001', username: 'meeting-bot', bot: true } };
+  inWindow[60] = { ...inWindow[60], content: 'Webhook 메시지', reactions: checkmark, webhook_id: '700000000000000001' };
+  const before = at(from - 1000, { content: '기간 전 결정', reactions: checkmark });
+  const after = Array.from({ length: 30 }, (_, i) => at(end + 1000 * (i + 1), { content: i === 0 ? '회의 뒤 결정' : '잡담', reactions: i === 0 ? checkmark : [] }));
+  return [before, ...inWindow, ...after];
+}
+const setMessages = (list) => fetch(`${MOCK}/__messages`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(list) });
 
 async function writeSegments(meetingId, segments) {
   const folder = path.join(dir, 'recordings', meetingId, 'segments');
@@ -147,6 +173,32 @@ async function meetingEnded(body) {
   assert.equal(res.status, 200, `Webhook 응답 ${res.status}`);
 }
 
+/**
+ * n8n 실행 기록(flatted 형식)을 객체로 되돌린다. 문자열 값은 배열 안 위치를 가리키는 참조다.
+ * flatted 패키지의 parse와 같은 규칙을 의존성 없이 옮겼다.
+ */
+function unflatten(text) {
+  const input = JSON.parse(text);
+  const seen = new Map();
+  const revive = (index) => {
+    if (seen.has(index)) return seen.get(index);
+    const value = input[index];
+    if (value === null || typeof value !== 'object') {
+      seen.set(index, value);
+      return value;
+    }
+    const out = Array.isArray(value) ? [] : {};
+    seen.set(index, out);
+    for (const [key, v] of Object.entries(value)) out[key] = typeof v === 'string' ? revive(Number(v)) : v;
+    return out;
+  };
+  return revive(0);
+}
+
+/** 실행 기록에서 노드의 첫 출력 항목들을 꺼낸다. */
+const nodeOutput = (data, name) =>
+  (unflatten(data).resultData.runData[name]?.[0]?.data?.main?.[0] ?? []).map((item) => item.json);
+
 /** n8n을 멈춘 뒤 SQLite 사본에서 실행 기록을 읽는다. 실행 중인 DB를 컨테이너 밖에서 읽지 않기 위해서다. */
 async function readExecutions(workflowId) {
   await compose('stop', 'n8n');
@@ -175,11 +227,13 @@ try {
   step('n8n에 테스트 자격 증명과 워크플로를 가져오고 publish');
   await startN8n(workflow);
 
-  step('1회차: 회의 종료 → 발화 파일 6개 읽기 → 음성 인식 → 녹취 → 회의 채널 알림');
+  step('1회차: 회의 종료 → 발화 파일 6개 읽기 → (결정 메시지 갈래, 음성 인식 갈래) → 알림 만들기 → 회의 채널 알림');
+  const messages = channelMessages();
+  await setMessages(messages);
   await meetingEnded(manifest);
   const first = await waitFor('채널 알림', async () => {
     const requests = await mockRequests();
-    return byPath(requests, DISCORD_POST).length === 1 ? requests : null;
+    return requests.filter(isPost).length === 1 ? requests : null;
   });
   const transcriptions = byPath(first, TRANSCRIBE);
   assert.equal(transcriptions.length, 6);
@@ -193,12 +247,21 @@ try {
   }
   const discord = byPath(first, DISCORD);
   assert.ok(discord.every((r) => r.authorization === 'Bot dummy-e2e-discord'));
-  // 봇 토큰 방식에서는 서버 확인 요청 없이 메시지만 보낸다(서버 확인은 OAuth2일 때만).
-  assert.deepEqual(discord.map((r) => `${r.method} ${r.path}`), [`POST /discord/channels/${CHANNEL}/messages`]);
-  const [notice] = discord;
+  // 결정 메시지는 기간 시작 ID부터 100개씩 받고, 다음 after는 받은 것 중 가장 큰 ID다. 60개가 온 세 번째에서 멈춘다.
+  const pages = discord.filter(isGet);
+  const afterIdOf = (ms) => (((BigInt(ms) - DISCORD_EPOCH) << 22n) - 1n).toString();
+  const sorted = messages.map((m) => m.id).sort((a, b) => (BigInt(a) < BigInt(b) ? -1 : 1));
+  const firstAfter = afterIdOf(Date.parse(manifest.startedAt) - 7 * DAY + 1);
+  const startIndex = sorted.findIndex((id) => BigInt(id) > BigInt(firstAfter));
+  assert.deepEqual(pages.map((r) => r.query.after), [firstAfter, sorted[startIndex + 99], sorted[startIndex + 199]]);
+  assert.ok(pages.every((r) => r.query.limit === '100' && r.path === `/discord/channels/${CHANNEL}/messages`));
+  // 봇 토큰 방식의 Discord 노드는 서버 확인 요청 없이 메시지만 보낸다(서버 확인은 OAuth2일 때만).
+  const [notice] = discord.filter(isPost);
   // Discord 노드에는 멘션을 끄는 옵션이 없다. 알림 문구가 코드가 만든 회의 ID와 숫자뿐인지 확인한다.
-  assert.deepEqual(notice.json, { content: '회의 20261014-1400 녹취 완료, 발화 6개' });
-  console.log(`  알림: ${notice.json.content}`);
+  assert.deepEqual(notice.json, { content: '회의 20261014-1400 녹취 완료, 발화 6개, 결정 메시지 3개' });
+  // 결정 메시지 갈래가 화면 위쪽이라 음성 인식보다 먼저 실행된다.
+  assert.ok(first.findIndex(isGet) < first.findIndex((r) => TRANSCRIBE.test(r.path)), '결정 메시지 조회가 음성 인식보다 먼저다');
+  console.log(`  메시지 조회 ${pages.length}번(음성 인식보다 먼저), 알림: ${notice.json.content}`);
 
   step('2회차: 녹음 폴더가 없으면 음성 인식과 알림 없이 실패');
   await meetingEnded({ ...manifest, meetingId: '20261015-1400' });
@@ -214,12 +277,37 @@ try {
   await meetingEnded(manifest);
   const fifth = await waitFor('재시도 뒤 채널 알림', async () => {
     const requests = await mockRequests();
-    return byPath(requests, DISCORD_POST).length === 2 ? requests.slice(first.length) : null;
+    return requests.filter(isPost).length === 2 ? requests.slice(first.length) : null;
   });
   const retried = byPath(fifth, TRANSCRIBE);
   assert.equal(retried.filter((r) => r.status === 500).length, 1);
   assert.equal(retried.filter((r) => r.status === 200).length >= 6, true);
   console.log(`  음성 인식 요청 ${retried.length}건(실패 1건 포함). 노드 전체를 다시 시도해 성공한 발화도 다시 보냈습니다`);
+
+  step('6회차: 결정 메시지 조회가 계속 실패(500)하면 다시 시도한 뒤 실행이 실패하고, 음성 인식과 알림은 하지 않는다');
+  await fetch(`${MOCK}/__messages-fail`, { method: 'POST' });
+  const beforeSixth = (await mockRequests()).length;
+  await meetingEnded(manifest);
+  await waitFor('조회 실패', async () => (await mockRequests()).slice(beforeSixth).some((r) => isGet(r) && r.status === 500) || null);
+  // 노드 재시도(5초 간격 2번)가 끝날 때까지 기다린다.
+  await sleep(15_000);
+  const sixth = (await mockRequests()).slice(beforeSixth);
+  const failedFetches = sixth.filter((r) => isGet(r) && r.status === 500).length;
+  // 오류 응답에서도 페이지 넘김 식이 깨지지 않아 노드가 실패하고, 노드 재시도로 3번 요청한다.
+  assert.equal(failedFetches, 3);
+  console.log(`  조회 500 응답 ${failedFetches}번`);
+  assert.equal(sixth.filter(isPost).length, 0, '조회가 실패하면 알림을 보내지 않는다');
+  assert.equal(byPath(sixth, TRANSCRIBE).length, 0, 'Discord 쪽이 실패하면 음성 인식(유료)을 부르지 않는다');
+
+  step('7회차: ✅ 메시지 내용이 비어 있으면(Message Content Intent 꺼짐) 실패하고, 음성 인식과 알림은 하지 않는다');
+  await setMessages(channelMessages({ blankDecision: true }));
+  const beforeSeventh = (await mockRequests()).length;
+  await meetingEnded(manifest);
+  await waitFor('메시지 조회', async () => (await mockRequests()).slice(beforeSeventh).filter((r) => isGet(r) && r.status === 200).length >= 3 || null);
+  await sleep(3_000);
+  const seventh = (await mockRequests()).slice(beforeSeventh);
+  assert.equal(seventh.filter(isPost).length, 0);
+  assert.equal(byPath(seventh, TRANSCRIBE).length, 0, 'Discord 쪽이 실패하면 음성 인식(유료)을 부르지 않는다');
 
   step('n8n에서 내보낸 워크플로가 가져온 것과 동작이 같은지 차이 검사');
   await compose('exec', '-T', 'n8n', 'n8n', 'export:workflow', `--id=${workflow.id}`, '--output=/home/node/.n8n/exported.json');
@@ -228,8 +316,8 @@ try {
 
   step('n8n 실행 기록 확인');
   const executions = await readExecutions(workflow.id);
-  assert.deepEqual(executions.map((e) => e.status), ['success', 'error', 'error', 'error', 'success']);
-  const [ok, noFolder, oneMissing, badId] = executions.map((e) => e.data);
+  assert.deepEqual(executions.map((e) => e.status), ['success', 'error', 'error', 'error', 'success', 'error', 'error']);
+  const [ok, noFolder, oneMissing, badId, , fetchFailed, blank] = executions.map((e) => e.data);
   for (const line of [
     '[00:00:03] 참석자 2: 3초 발화',
     '[00:00:12] 도연: 12초 발화',
@@ -243,6 +331,14 @@ try {
   assert.ok(noFolder.includes('발화 파일 6개 중 0개만 읽었습니다'), '폴더 없음 오류 메시지');
   assert.ok(oneMissing.includes('발화 파일 6개 중 5개만 읽었습니다'), '파일 1개 없음 오류 메시지');
   assert.ok(badId.includes('meetingId 형식이 다릅니다'), '회의 ID 형식 오류 메시지');
+  // 실제 n8n에서 조회 노드는 메시지 하나를 항목 하나로 냈고, 고르기 노드는 사람이 쓴 기간 안 ✅ 메시지 3개만 골랐다.
+  assert.equal(nodeOutput(ok, '결정 메시지 조회').length, 260);
+  const [picked] = nodeOutput(ok, '결정 메시지 고르기');
+  assert.equal(picked.scanned, 260);
+  assert.deepEqual(picked.decisions.map((d) => d.content), ['결정 A: 배포는 금요일', '결정 B: API v2', '결정 C: 회의 중 결정']);
+  assert.ok(picked.decisions.every((d) => d.author === '도연' && d.link.startsWith(`https://discord.com/channels/${manifest.guildId}/${CHANNEL}/`)));
+  assert.equal(unflatten(fetchFailed).resultData.lastNodeExecuted, '결정 메시지 조회', '조회 실패는 조회 노드에서 멈춘다');
+  assert.ok(blank.includes('Message Content Intent'), '빈 내용 오류 메시지');
   console.log(`  실행 ${executions.length}건: ${executions.map((e) => e.status).join(', ')}`);
 
   console.log('E2E PASS');
