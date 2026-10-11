@@ -16,6 +16,7 @@ Discord 회의를 말하는 사람별로 녹음하고, n8n 워크플로가 음�
 ## 녹음 봇
 
 `/회의녹음 시작`부터 `/회의녹음 종료`까지만 음성 채널에 들어가 말하는 사람별로 녹음한다.
+n8n이 회의 채널에 올린 회의록 초안의 `승인`·`거절` 버튼도 처리한다.
 
 ```
 /회의녹음 시작 ─> 발화마다 .ogg 저장 ─> /회의녹음 종료
@@ -27,6 +28,7 @@ Discord 회의를 말하는 사람별로 녹음하고, n8n 워크플로가 음�
 | `src/index.js` | 명령 처리, 녹음 시작과 종료, 연결 끊김 처리 |
 | `src/recorder.js` | 음성 채널 연결, 발화별 녹음, 종료 순서 |
 | `src/finalize.js` | 짧은 발화 제거, webm 변환, manifest 작성, n8n 호출 |
+| `src/approval.js` | 회의록 초안의 승인·거절 버튼 클릭을 n8n 재개 주소로 전달 |
 | `src/commands.js`, `src/deploy-commands.js` | `/회의녹음` 명령 정의와 등록 |
 | `scripts/offline-test.js` | Discord 없이 녹음, 종료, 변환, manifest 작성 확인 |
 
@@ -48,6 +50,8 @@ npm start
 ```
 
 n8n 없이 녹음만 확인할 때는 `.env`의 `MEETING_ENDED_WEBHOOK_URL`을 비워 둔다.
+승인 버튼은 같은 주소의 n8n(`<origin>/webhook-waiting/…`)을 부른다. 로컬 n8n과 함께 확인할 때는
+`MEETING_ENDED_WEBHOOK_URL=http://127.0.0.1:5678/webhook/meeting-ended`로 실행한다.
 
 ### 서버에서 실행 (녹음 봇 + n8n)
 
@@ -116,6 +120,7 @@ npm run e2e:n8n                            # 실제 n8n + 가짜 OpenAI·Discord
 오프라인 테스트는 ffmpeg로 만든 Opus 패킷을 실제 수신 스트림에 넣는다. `offline-test.js`는 녹음, 강제 종료, webm 변환, manifest 작성을,
 `offline-reconnect-test.js`는 연결 끊김 뒤 재접속, 채널 이동, 채널 삭제, 봇 재시작 뒤 이어 가기를 가짜 음성 연결로,
 `offline-retention-test.js`는 보관 기간이 지난 회의 폴더만 지우는지를,
+`offline-approval-test.js`는 승인 버튼 ID 확인, n8n 재개 요청, 틀린 서명·끝난 실행·봇 클릭 처리를 가짜 상호작용으로,
 `offline-workflow-test.js`는 n8n 워크플로의 Code 노드, 차이 검사, 커밋된 워크플로 JSON이 코드와 같은지를 확인한다.
 CI는 `npm test`를 돌린다. `npm run e2e:n8n`은 Docker가 필요해 CI에 넣지 않았다.
 

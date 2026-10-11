@@ -342,6 +342,186 @@
         3360,
         0
       ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 검증을 통과한 초안을 회의 채널에 보낼 메시지를 만든다(설계 5절 G). 승인·거절 버튼을 달고 승인 기다리기 노드에서 멈춘다.\n// 검증에 실패한 초안(draftOk: false)은 승인으로 넘기지 않는다. 항목을 내지 않으면 뒤 노드가 돌지 않고 실행이 끝난다.\nconst EMBED_LIMIT = 4096; // Discord embed description 한도\nconst CUSTOM_ID_LIMIT = 100; // Discord 버튼 ID 한도\n\nconst meeting = $('녹음 정보 확인').first().json;\nconst { meetingDate } = $('초안 요청 만들기').first().json;\nconst check = $('초안 검증').first().json;\nif (!check.draftOk) return [];\n\n// 재개 주소는 <base>/webhook-waiting/<실행 ID>?signature=<서명>이다(n8n 2.42.6 실험). 녹음 봇은 버튼 ID의 실행 ID와 서명으로\n// Docker 내부 주소를 다시 만든다(2026-10-11 사용자 결정). 서명이 틀리면 n8n이 401로 거절한다.\n// Code 노드 실행 환경에는 URL이 없어서(n8n 2.42.6 E2E에서 확인) 정규식으로 읽는다.\nconst resume = /\\/webhook-waiting\\/(\\d+)\\?signature=([0-9a-f]{64})$/.exec(String($execution.resumeUrl ?? ''));\nif (!resume) throw new Error('n8n 재개 주소에서 실행 ID와 서명을 읽지 못했습니다');\nconst [, executionId, signature] = resume;\nconst customId = (action) => {\n  const id = `mb:${action}:${executionId}:${signature}`;\n  if (id.length > CUSTOM_ID_LIMIT) throw new Error(`버튼 ID가 ${CUSTOM_ID_LIMIT}자를 넘습니다`);\n  return id;\n};\n\n// 4,096자까지는 embed 하나에 보이고, 넘으면 앞부분만 embed에 보이고 전체는 .md 파일로 붙인다(2026-10-11 사용자 결정).\n// attach에 따라 긴 초안 확인(If) 노드가 첨부해 보내는 노드와 embed만 보내는 노드로 나눈다.\n// 글자 수는 코드 포인트로 센다. 이모지 같은 문자를 반으로 자르지 않기 위해서다.\nconst chars = [...check.draft];\nconst attach = chars.length > EMBED_LIMIT;\nconst fileName = `meeting-notes-draft-${meeting.meetingId}.md`;\nconst more = '\\n\\n…(전체는 첨부한 .md 파일에 있습니다)';\nconst description = attach ? chars.slice(0, EMBED_LIMIT - [...more].length).join('') + more : check.draft;\n\nconst payload = {\n  content: `회의 ${meeting.meetingId} 회의록 초안입니다. 3일 안에 승인 또는 거절을 눌러 주세요.`,\n  embeds: [{ title: `회의록 초안 (${meetingDate})`, description }],\n  components: [{\n    type: 1,\n    components: [\n      { type: 2, style: 3, label: '승인', custom_id: customId('approve') },\n      { type: 2, style: 4, label: '거절', custom_id: customId('reject') },\n    ],\n  }],\n  // 초안에는 녹취와 채팅 문장이 들어 있어 @everyone 같은 멘션이 울리지 않게 끈다.\n  allowed_mentions: { parse: [] },\n  ...(attach ? { attachments: [{ id: 0, filename: fileName }] } : {}),\n};\n\nreturn [{\n  json: { textChannelId: meeting.textChannelId, attach, payload },\n  ...(attach ? {\n    binary: { draft: { data: Buffer.from(check.draft, 'utf8').toString('base64'), mimeType: 'text/markdown', fileName } },\n  } : {}),\n}];\n"
+      },
+      "name": "초안 메시지 만들기",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3600,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "b7f3c0de-5a1e-4c2b-9d3f-1e2a3b4c5d6e",
+              "leftValue": "={{ $json.attach }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "긴 초안 확인",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        3840,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://discord.com/api/v10/channels/{{ $json.textChannelId }}/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "discordBotApi",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "payload_json",
+              "value": "={{ JSON.stringify($json.payload) }}"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "files[0]",
+              "inputDataFieldName": "draft"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "초안 보내기(첨부)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4080,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://discord.com/api/v10/channels/{{ $json.textChannelId }}/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "discordBotApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.payload) }}",
+        "options": {}
+      },
+      "name": "초안 보내기",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4080,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "httpMethod": "POST",
+        "responseMode": "onReceived",
+        "limitWaitTime": true,
+        "limitType": "afterTimeInterval",
+        "resumeAmount": 3,
+        "resumeUnit": "days",
+        "options": {}
+      },
+      "name": "승인 기다리기",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "webhookId": "0d0b6a7e-3c1f-4f55-9a3e-6f1c2b8e5d40",
+      "position": [
+        4320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 승인 기다리기(Wait)가 재개된 이유를 읽고 초안 메시지를 고칠 내용을 만든다.\n// 녹음 봇이 버튼 클릭으로 재개하면 요청 본문에 { decision, by }가 온다. 3일이 지나 재개되면 본문 없이 보낸 메시지가 그대로 온다(n8n 2.42.6 실험).\nconst DECISIONS = { approve: '승인', reject: '거절' };\n\nconst meeting = $('녹음 정보 확인').first().json;\n// 초안은 길이에 따라 두 노드 중 하나로 보냈다.\nconst sent = ($('초안 보내기').isExecuted ? $('초안 보내기') : $('초안 보내기(첨부)')).first().json;\nconst body = $input.first().json.body;\n\nlet decision = 'timeout';\nlet by = null;\nif (body !== undefined) {\n  if (!Object.hasOwn(DECISIONS, body?.decision)) throw new Error('승인 기다리기에 알 수 없는 결정이 왔습니다');\n  decision = body.decision;\n  // 누른 사람의 표시 이름만 받는다. 메시지에 그대로 쓰므로 줄바꿈을 없애고 길이를 줄인다.\n  by = String(body.by ?? '').replace(/\\s+/g, ' ').trim().slice(0, 80) || '알 수 없음';\n}\n\nconst result = decision === 'timeout' ? '기한 초과(3일 동안 승인·거절 없음)' : `${DECISIONS[decision]}(${by})`;\nreturn [{\n  json: {\n    decision,\n    by,\n    textChannelId: sent.channel_id,\n    messageId: sent.id,\n    // 버튼을 지우고 결과를 본문에 적는다. embed와 첨부는 보내지 않아 그대로 남는다.\n    body: {\n      content: `회의 ${meeting.meetingId} 회의록 초안: ${result}`,\n      components: [],\n      allowed_mentions: { parse: [] },\n    },\n  },\n}];\n"
+      },
+      "name": "결정 읽기",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4560,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://discord.com/api/v10/channels/{{ $json.textChannelId }}/messages/{{ $json.messageId }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "discordBotApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {}
+      },
+      "name": "결과 표시",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "position": [
+        4800,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// 기한 초과일 때만 회의 채널에 알린다. 승인·거절은 누른 사람이 바로 보고 메시지에도 결과가 남아 따로 알리지 않는다.\nconst result = $('결정 읽기').first().json;\nif (result.decision !== 'timeout') return [];\n\nconst meeting = $('녹음 정보 확인').first().json;\nreturn [{\n  json: {\n    textChannelId: result.textChannelId,\n    body: {\n      content: `회의 ${meeting.meetingId} 회의록 초안을 3일 동안 아무도 승인하거나 거절하지 않아 ClickUp에 쓰지 않았습니다.`,\n      message_reference: { message_id: result.messageId, fail_if_not_exists: false },\n      allowed_mentions: { parse: [], replied_user: false },\n    },\n  },\n}];\n"
+      },
+      "name": "기한 초과 알림 만들기",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5040,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://discord.com/api/v10/channels/{{ $json.textChannelId }}/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "discordBotApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {}
+      },
+      "name": "기한 초과 알림",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        5280,
+        0
+      ]
     }
   ],
   "connections": {
@@ -520,6 +700,112 @@
         [
           {
             "node": "회의 채널 알림",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "회의 채널 알림": {
+      "main": [
+        [
+          {
+            "node": "초안 메시지 만들기",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "초안 메시지 만들기": {
+      "main": [
+        [
+          {
+            "node": "긴 초안 확인",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "긴 초안 확인": {
+      "main": [
+        [
+          {
+            "node": "초안 보내기(첨부)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "초안 보내기",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "초안 보내기(첨부)": {
+      "main": [
+        [
+          {
+            "node": "승인 기다리기",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "초안 보내기": {
+      "main": [
+        [
+          {
+            "node": "승인 기다리기",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "승인 기다리기": {
+      "main": [
+        [
+          {
+            "node": "결정 읽기",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "결정 읽기": {
+      "main": [
+        [
+          {
+            "node": "결과 표시",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "결과 표시": {
+      "main": [
+        [
+          {
+            "node": "기한 초과 알림 만들기",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "기한 초과 알림 만들기": {
+      "main": [
+        [
+          {
+            "node": "기한 초과 알림",
             "type": "main",
             "index": 0
           }

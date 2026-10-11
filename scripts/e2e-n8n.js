@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { TEST_CREDENTIALS } from '../test/e2e/credentials.js';
 import { TEMPLATE } from '../test/e2e/template.js';
+import { handleApprovalButton } from '../src/approval.js';
 import { buildWorkflow, credentialTypeOf } from './build-workflow.js';
 import { diffWorkflows, pickWorkflow } from './diff-workflow.js';
 
@@ -85,6 +86,25 @@ const DISCORD = /^\/discord\//;
 const DISCORD_POST = /^\/discord\/channels\/\d+\/messages$/;
 const isGet = (r) => r.method === 'GET' && DISCORD_POST.test(r.path);
 const isPost = (r) => r.method === 'POST' && DISCORD_POST.test(r.path);
+// 초안 메시지: 짧은 초안은 JSON, 긴 초안은 multipart(payload_json + 파일)로 온다. 둘 다 버튼(components)이 있다.
+const payloadOf = (r) => (r.multipart ? JSON.parse(r.multipart.payload_json) : r.json);
+const isDraftPost = (r) => isPost(r) && Array.isArray(payloadOf(r)?.components);
+const isPatch = (r) => r.method === 'PATCH' && /^\/discord\/channels\/\d+\/messages\/\d+$/.test(r.path);
+
+/** 녹음 봇의 버튼 처리 코드로 실제 n8n 재개 주소를 부른다. Discord 상호작용만 흉내 내고, 누른 사람에게 보인 답을 돌려준다. */
+async function click(customId, user = {}) {
+  const replies = [];
+  const interaction = {
+    customId,
+    user: { bot: false, username: 'doyeon', globalName: '도연', ...user },
+    deferred: false,
+    isButton: () => true,
+    async deferReply() { this.deferred = true; },
+    async editReply(text) { replies.push(text); },
+  };
+  await handleApprovalButton(interaction, { webhookUrl: `${N8N}/webhook/meeting-ended` });
+  return replies;
+}
 const TEMPLATE_PAGE = /^\/clickup\/api\/v3\/workspaces\/[^/]+\/docs\/[^/]+\/pages\/[^/]+$/;
 const DRAFT = /^\/openai\/responses$/;
 
@@ -204,7 +224,12 @@ async function prepare() {
   // 일부 파일만 있는 회의
   await writeSegments('20261016-1400', manifest.segments.slice(1));
 
-  const workflow = await buildWorkflow({ openaiBase: 'http://mock:8080/openai', clickupBase: 'http://mock:8080/clickup/api/v3' });
+  // 승인 기다리기는 3일 대신 30초로 줄여 기한 초과를 확인한다.
+  const workflow = await buildWorkflow({
+    openaiBase: 'http://mock:8080/openai',
+    clickupBase: 'http://mock:8080/clickup/api/v3',
+    approvalWait: { amount: 30, unit: 'seconds' },
+  });
   for (const node of workflow.nodes) {
     const type = credentialTypeOf(node);
     if (type) node.credentials = { [type]: { id: TEST_CREDENTIALS[type].id, name: TEST_CREDENTIALS[type].name } };
@@ -295,15 +320,15 @@ try {
   step('n8n에 테스트 자격 증명과 워크플로를 가져오고 publish');
   await startN8n(workflow);
 
-  step('1회차: 회의 종료 → 발화 파일 6개 읽기 → (결정 메시지 갈래, 음성 인식 갈래) → 템플릿 읽기 → 초안 작성 → 초안 검증 → 회의 채널 알림');
+  step('1회차: 회의 종료 → 발화 파일 6개 읽기 → (결정 메시지 갈래, 음성 인식 갈래) → 템플릿 읽기 → 초안 작성 → 초안 검증 → 회의 채널 알림 → 초안 메시지');
   const messages = channelMessages();
   await setMessages(messages);
   await setTemplate(TEMPLATE);
   await setDraft(gptResponse(`\`\`\`markdown\n${draftFor(messages)}\n\`\`\``));
   await meetingEnded(manifest);
-  const first = await waitFor('채널 알림', async () => {
+  const first = await waitFor('초안 메시지', async () => {
     const requests = await mockRequests();
-    return requests.filter(isPost).length === 1 ? requests : null;
+    return requests.some(isDraftPost) ? requests : null;
   });
   const transcriptions = byPath(first, TRANSCRIBE);
   assert.equal(transcriptions.length, 6);
@@ -326,7 +351,7 @@ try {
   assert.deepEqual(pages.map((r) => r.query.after), [firstAfter, sorted[startIndex + 99], sorted[startIndex + 199]]);
   assert.ok(pages.every((r) => r.query.limit === '100' && r.path === `/discord/channels/${CHANNEL}/messages`));
   // 봇 토큰 방식의 Discord 노드는 서버 확인 요청 없이 메시지만 보낸다(서버 확인은 OAuth2일 때만).
-  const [notice] = discord.filter(isPost);
+  const [notice] = discord.filter((r) => isPost(r) && !isDraftPost(r));
   // Discord 노드에는 멘션을 끄는 옵션이 없다. 알림 문구가 코드가 만든 회의 ID와 숫자뿐인지 확인한다.
   assert.deepEqual(notice.json, { content: '회의 20261014-1400 녹취 완료, 발화 6개, 결정 메시지 3개, 초안 검증 통과' });
   // 결정 메시지 갈래가 화면 위쪽이라 음성 인식보다 먼저 실행된다.
@@ -356,6 +381,34 @@ try {
   assert.ok(lastTranscription < order(TEMPLATE_PAGE) && order(TEMPLATE_PAGE) < order(DRAFT) && order(DRAFT) < first.findIndex(isPost));
   console.log(`  메시지 조회 ${pages.length}번(음성 인식보다 먼저), 템플릿 1번, GPT 1번, 알림: ${notice.json.content}`);
 
+  // 초안 메시지: embed 하나, 승인·거절 버튼, 멘션 끔, 파일 없음. 버튼 ID에 실행 ID와 서명이 있다.
+  const [draftPost] = first.filter(isDraftPost);
+  assert.equal(draftPost.path, `/discord/channels/${CHANNEL}/messages`);
+  assert.equal(draftPost.authorization, 'Bot dummy-e2e-discord');
+  assert.equal(draftPost.multipart, undefined, '4,096자 이하는 파일 없이 JSON으로 보낸다');
+  const payload = payloadOf(draftPost);
+  assert.equal(payload.content, '회의 20261014-1400 회의록 초안입니다. 3일 안에 승인 또는 거절을 눌러 주세요.');
+  assert.deepEqual(payload.allowed_mentions, { parse: [] });
+  assert.ok(payload.embeds[0].description.includes('| 참석자 | 도연, 참석자 2 |'));
+  const [approveId, rejectId] = payload.components[0].components.map((b) => b.custom_id);
+  assert.match(approveId, /^mb:approve:\d+:[0-9a-f]{64}$/);
+  assert.match(rejectId, /^mb:reject:\d+:[0-9a-f]{64}$/);
+
+  step('1회차 버튼: 틀린 서명과 봇 계정 클릭은 실행을 바꾸지 않고, 승인하면 버튼이 꺼지며, 끝난 실행은 다시 재개되지 않는다');
+  assert.deepEqual(await click(approveId.replace(/[0-9a-f]{64}$/, '0'.repeat(64))), ['이미 처리됐거나 유효하지 않은 버튼입니다.']);
+  assert.deepEqual(await click(approveId, { bot: true }), []);
+  await sleep(1_500);
+  assert.equal((await mockRequests()).filter(isPatch).length, 0, '틀린 서명과 봇 클릭으로는 재개되지 않는다');
+  assert.deepEqual(await click(approveId), ['승인했습니다. 회의 채널의 초안 메시지에 결과가 표시됩니다.']);
+  const approved = await waitFor('결과 표시', async () => (await mockRequests()).find(isPatch));
+  assert.match(approved.path, new RegExp(`^/discord/channels/${CHANNEL}/messages/\\d+$`));
+  assert.deepEqual(approved.json, { content: '회의 20261014-1400 회의록 초안: 승인(도연)', components: [], allowed_mentions: { parse: [] } });
+  assert.deepEqual(await click(rejectId), ['이미 처리됐거나 유효하지 않은 버튼입니다.'], '끝난 실행(409)');
+  await sleep(1_500);
+  const afterFirst = await mockRequests();
+  assert.equal(afterFirst.filter(isPatch).length, 1);
+  assert.equal(afterFirst.filter(isPost).length, 2, '승인하면 기한 초과 알림을 보내지 않는다');
+
   step('2회차: 녹음 폴더가 없으면 음성 인식과 알림 없이 실패');
   await meetingEnded({ ...manifest, meetingId: '20261015-1400' });
   step('3회차: 발화 파일 6개 중 1개가 없으면 실패');
@@ -363,15 +416,28 @@ try {
   step('4회차: 회의 ID로 상위 폴더에 접근하려는 manifest는 실패');
   await meetingEnded({ ...manifest, meetingId: '../20261014-1400' });
   await sleep(5_000);
-  assert.equal((await mockRequests()).length, first.length, '실패한 회차는 외부 API를 부르지 않는다');
+  assert.equal((await mockRequests()).length, afterFirst.length, '실패한 회차는 외부 API를 부르지 않는다');
 
-  step('5회차: 음성 인식 한 번 실패(500) → 노드 재시도 후 성공');
+  step('5회차: 음성 인식 한 번 실패(500) → 노드 재시도 후 성공. 4,096자가 넘는 초안은 .md 파일로 붙이고, 거절한다');
   await fetch(`${MOCK}/__fail-next-transcription`, { method: 'POST' });
+  const longDraft = draftFor(messages).replace(/\*   없음$/, `*   ${'긴 기록입니다. '.repeat(500)}`);
+  await setDraft(gptResponse(longDraft));
   await meetingEnded(manifest);
-  const fifth = await waitFor('재시도 뒤 채널 알림', async () => {
-    const requests = await mockRequests();
-    return requests.filter(isPost).length === 2 ? requests.slice(first.length) : null;
+  const fifth = await waitFor('재시도 뒤 초안 메시지', async () => {
+    const requests = (await mockRequests()).slice(afterFirst.length);
+    return requests.some(isDraftPost) ? requests : null;
   });
+  const longPost = fifth.find(isDraftPost);
+  const longPayload = payloadOf(longPost);
+  assert.deepEqual(longPost.multipart['files[0]'].filename, 'meeting-notes-draft-20261014-1400.md');
+  assert.ok(longPost.multipart['files[0]'].size > Buffer.byteLength(longPayload.embeds[0].description), '파일에 초안 전체가 있다');
+  assert.deepEqual(longPayload.attachments, [{ id: 0, filename: 'meeting-notes-draft-20261014-1400.md' }]);
+  assert.equal([...longPayload.embeds[0].description].length, 4096);
+  assert.ok(longPayload.embeds[0].description.endsWith('…(전체는 첨부한 .md 파일에 있습니다)'));
+  const longReject = longPayload.components[0].components[1].custom_id;
+  assert.deepEqual(await click(longReject, { globalName: null, username: 'minsu' }), ['거절했습니다. 회의 채널의 초안 메시지에 결과가 표시됩니다.']);
+  const rejected = await waitFor('거절 표시', async () => (await mockRequests()).filter(isPatch)[1]);
+  assert.deepEqual(rejected.json, { content: '회의 20261014-1400 회의록 초안: 거절(minsu)', components: [], allowed_mentions: { parse: [] } });
   const retried = byPath(fifth, TRANSCRIBE);
   assert.equal(retried.filter((r) => r.status === 500).length, 1);
   assert.equal(retried.filter((r) => r.status === 200).length >= 6, true);
@@ -447,6 +513,30 @@ try {
   assert.equal(byPath(eleventh, DRAFT).length, 0);
   assert.equal(eleventh.filter(isPost).length, 0);
 
+  step('12회차: 기한(테스트 30초) 안에 아무도 누르지 않으면 기한 초과로 재개되어 버튼을 지우고 답장으로 알린다');
+  await setTemplate(TEMPLATE);
+  await setDraft(gptResponse(draftFor(messages)));
+  const beforeTwelfth = (await mockRequests()).length;
+  await meetingEnded(manifest);
+  const twelfth = await waitFor('기한 초과 알림', async () => {
+    const requests = (await mockRequests()).slice(beforeTwelfth);
+    return requests.some((r) => isPost(r) && r.json?.message_reference) ? requests : null;
+  }, 180_000);
+  const timedOutPost = twelfth.find(isDraftPost);
+  const timedOutPatch = twelfth.find(isPatch);
+  assert.deepEqual(timedOutPatch.json, {
+    content: '회의 20261014-1400 회의록 초안: 기한 초과(3일 동안 승인·거절 없음)', components: [], allowed_mentions: { parse: [] },
+  });
+  const timeoutNotice = twelfth.find((r) => isPost(r) && r.json?.message_reference);
+  assert.deepEqual(timeoutNotice.json, {
+    content: '회의 20261014-1400 회의록 초안을 3일 동안 아무도 승인하거나 거절하지 않아 ClickUp에 쓰지 않았습니다.',
+    message_reference: { message_id: timedOutPatch.path.split('/').pop(), fail_if_not_exists: false },
+    allowed_mentions: { parse: [], replied_user: false },
+  });
+  assert.ok(twelfth.indexOf(timedOutPost) < twelfth.indexOf(timedOutPatch));
+  const lateClick = payloadOf(timedOutPost).components[0].components[0].custom_id;
+  assert.deepEqual(await click(lateClick), ['이미 처리됐거나 유효하지 않은 버튼입니다.'], '기한이 지난 버튼');
+
   step('n8n에서 내보낸 워크플로가 가져온 것과 동작이 같은지 차이 검사');
   await compose('exec', '-T', 'n8n', 'n8n', 'export:workflow', `--id=${workflow.id}`, '--output=/home/node/.n8n/exported.json');
   const exported = pickWorkflow(JSON.parse(await readFile(path.join(dir, 'n8n', 'exported.json'), 'utf8')), workflow);
@@ -455,9 +545,10 @@ try {
   step('n8n 실행 기록 확인');
   const executions = await readExecutions(workflow.id);
   assert.deepEqual(executions.map((e) => e.status), [
-    'success', 'error', 'error', 'error', 'success', 'error', 'error', 'success', 'error', 'error', 'error',
+    'success', 'error', 'error', 'error', 'success', 'error', 'error', 'success', 'error', 'error', 'error', 'success',
   ]);
-  const [ok, noFolder, oneMissing, badId, , fetchFailed, blank, badEvidence, truncated, refused, noTemplate] = executions.map((e) => e.data);
+  const [ok, noFolder, oneMissing, badId, rejectedRun, fetchFailed, blank, badEvidence, truncated, refused, noTemplate, timedOut] =
+    executions.map((e) => e.data);
   for (const line of [
     '[00:00:03] 참석자 2: 3초 발화',
     '[00:00:12] 도연: 12초 발화',
@@ -492,6 +583,13 @@ try {
   assert.ok(refused.includes('GPT가 초안 작성을 거절했습니다'), '거절 오류 메시지');
   for (const data of [truncated, refused]) assert.equal(unflatten(data).resultData.lastNodeExecuted, '초안 검증');
   assert.equal(unflatten(noTemplate).resultData.lastNodeExecuted, '템플릿 읽기', '템플릿 조회 실패는 템플릿 읽기에서 멈춘다');
+  // 승인 기다리기가 재개된 이유가 실행 기록에 남는다. 검증에 실패한 초안은 승인 메시지를 만들지 않았다.
+  const decisionOf = (data) => nodeOutput(data, '결정 읽기')[0];
+  assert.deepEqual([decisionOf(ok).decision, decisionOf(ok).by], ['approve', '도연']);
+  assert.deepEqual([decisionOf(rejectedRun).decision, decisionOf(rejectedRun).by], ['reject', 'minsu']);
+  assert.deepEqual([decisionOf(timedOut).decision, decisionOf(timedOut).by], ['timeout', null]);
+  assert.equal(unflatten(badEvidence).resultData.lastNodeExecuted, '초안 메시지 만들기');
+  assert.deepEqual(nodeOutput(badEvidence, '초안 메시지 만들기'), []);
   console.log(`  실행 ${executions.length}건: ${executions.map((e) => e.status).join(', ')}`);
 
   console.log('E2E PASS');

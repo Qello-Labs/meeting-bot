@@ -53,9 +53,18 @@ const POSITIONS = {
   '초안 검증': [2880, 0],
   '알림 만들기': [3120, 0],
   '회의 채널 알림': [3360, 0],
+  '초안 메시지 만들기': [3600, 0],
+  '긴 초안 확인': [3840, 0],
+  '초안 보내기(첨부)': [4080, -120],
+  '초안 보내기': [4080, 120],
+  '승인 기다리기': [4320, 0],
+  '결정 읽기': [4560, 0],
+  '결과 표시': [4800, 0],
+  '기한 초과 알림 만들기': [5040, 0],
+  '기한 초과 알림': [5280, 0],
 };
 
-// [보내는 노드, 받는 노드, 받는 입력 번호]
+// [보내는 노드, 받는 노드, 받는 입력 번호, 보내는 출력 번호]. If 노드는 출력 0이 참, 1이 거짓이다.
 const EDGES = [
   ['회의 종료', '녹음 정보 확인'],
   ['녹음 정보 확인', '발화 목록'],
@@ -74,7 +83,20 @@ const EDGES = [
   ['초안 작성', '초안 검증'],
   ['초안 검증', '알림 만들기'],
   ['알림 만들기', '회의 채널 알림'],
+  ['회의 채널 알림', '초안 메시지 만들기'],
+  ['초안 메시지 만들기', '긴 초안 확인'],
+  ['긴 초안 확인', '초안 보내기(첨부)', 0, 0],
+  ['긴 초안 확인', '초안 보내기', 0, 1],
+  ['초안 보내기(첨부)', '승인 기다리기'],
+  ['초안 보내기', '승인 기다리기'],
+  ['승인 기다리기', '결정 읽기'],
+  ['결정 읽기', '결과 표시'],
+  ['결과 표시', '기한 초과 알림 만들기'],
+  ['기한 초과 알림 만들기', '기한 초과 알림'],
 ];
+
+// 승인 기다리기 기한(설계 5절 G: 3일). E2E는 짧게 바꿔 기한 초과를 확인한다.
+const APPROVAL_WAIT = { amount: 3, unit: 'days' };
 
 function place(nodes) {
   return nodes.map((node) => {
@@ -85,8 +107,10 @@ function place(nodes) {
 
 function connect(edges) {
   const connections = {};
-  for (const [from, to, index = 0] of edges) {
-    (connections[from] ??= { main: [[]] }).main[0].push({ node: to, type: 'main', index });
+  for (const [from, to, index = 0, output = 0] of edges) {
+    const outputs = (connections[from] ??= { main: [[]] }).main;
+    while (outputs.length <= output) outputs.push([]);
+    outputs[output].push({ node: to, type: 'main', index });
   }
   return connections;
 }
@@ -103,7 +127,7 @@ const http = (name, parameters, settings = {}) => ({
 
 const credential = (type) => ({ authentication: 'predefinedCredentialType', nodeCredentialType: type });
 
-export async function buildWorkflow({ openaiBase = OPENAI_BASE, clickupBase = CLICKUP_BASE } = {}) {
+export async function buildWorkflow({ openaiBase = OPENAI_BASE, clickupBase = CLICKUP_BASE, approvalWait = APPROVAL_WAIT } = {}) {
   const meeting = "$('녹음 정보 확인').first().json";
   const nodes = place([
     {
@@ -238,6 +262,92 @@ export async function buildWorkflow({ openaiBase = OPENAI_BASE, clickupBase = CL
       type: 'n8n-nodes-base.discord',
       typeVersion: 2,
     },
+    code('초안 메시지 만들기', await readCode('approval-message')),
+    {
+      // 4,096자를 넘는 초안만 .md 파일을 붙여 보낸다. HTTP 노드 4.2의 multipart는 파일 필드를 비워 건너뛸 수 없어서(E2E에서 확인) 노드를 나눈다.
+      parameters: {
+        conditions: {
+          options: { caseSensitive: true, leftValue: '', typeValidation: 'strict', version: 3 },
+          conditions: [{
+            id: 'b7f3c0de-5a1e-4c2b-9d3f-1e2a3b4c5d6e',
+            leftValue: '={{ $json.attach }}',
+            rightValue: '',
+            operator: { type: 'boolean', operation: 'true', singleValue: true },
+          }],
+          combinator: 'and',
+        },
+        options: {},
+      },
+      name: '긴 초안 확인',
+      type: 'n8n-nodes-base.if',
+      typeVersion: 2.3,
+    },
+    // 초안에 녹취·채팅 문장이 들어가므로 멘션을 끌 수 있는 HTTP 노드로 보낸다(Discord 노드에는 allowed_mentions가 없다).
+    // 다시 보내면 초안이 두 번 올라갈 수 있어 두 노드 모두 재시도하지 않는다.
+    http('초안 보내기(첨부)', {
+      method: 'POST',
+      url: `=${DISCORD_BASE}/channels/{{ $json.textChannelId }}/messages`,
+      ...credential('discordBotApi'),
+      sendBody: true,
+      contentType: 'multipart-form-data',
+      bodyParameters: {
+        parameters: [
+          { name: 'payload_json', value: '={{ JSON.stringify($json.payload) }}' },
+          { parameterType: 'formBinaryData', name: 'files[0]', inputDataFieldName: 'draft' },
+        ],
+      },
+    }),
+    http('초안 보내기', {
+      method: 'POST',
+      url: `=${DISCORD_BASE}/channels/{{ $json.textChannelId }}/messages`,
+      ...credential('discordBotApi'),
+      sendBody: true,
+      specifyBody: 'json',
+      jsonBody: '={{ JSON.stringify($json.payload) }}',
+    }),
+    {
+      // 녹음 봇이 버튼 클릭을 재개 주소로 보낼 때까지 기다린다. 기한이 지나면 받은 메시지를 그대로 넘긴다.
+      parameters: {
+        resume: 'webhook',
+        httpMethod: 'POST',
+        responseMode: 'onReceived',
+        limitWaitTime: true,
+        limitType: 'afterTimeInterval',
+        resumeAmount: approvalWait.amount,
+        resumeUnit: approvalWait.unit,
+        options: {},
+      },
+      name: '승인 기다리기',
+      type: 'n8n-nodes-base.wait',
+      typeVersion: 1.1,
+      webhookId: '0d0b6a7e-3c1f-4f55-9a3e-6f1c2b8e5d40',
+    },
+    code('결정 읽기', await readCode('approval-result')),
+    http(
+      '결과 표시',
+      {
+        method: 'PATCH',
+        url: `=${DISCORD_BASE}/channels/{{ $json.textChannelId }}/messages/{{ $json.messageId }}`,
+        ...credential('discordBotApi'),
+        sendBody: true,
+        specifyBody: 'json',
+        jsonBody: '={{ JSON.stringify($json.body) }}',
+      },
+      // 같은 내용으로 고치는 것이라 다시 보내도 안전하다.
+      { retryOnFail: true, maxTries: 3, waitBetweenTries: 5000 },
+    ),
+    code('기한 초과 알림 만들기', await readCode('approval-timeout')),
+    http(
+      '기한 초과 알림',
+      {
+        method: 'POST',
+        url: `=${DISCORD_BASE}/channels/{{ $json.textChannelId }}/messages`,
+        ...credential('discordBotApi'),
+        sendBody: true,
+        specifyBody: 'json',
+        jsonBody: '={{ JSON.stringify($json.body) }}',
+      },
+    ),
   ]);
 
   return {
