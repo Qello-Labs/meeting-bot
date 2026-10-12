@@ -73,7 +73,7 @@ docker compose up -d --build
 | 보관 | 녹음은 끝난 지 7일 뒤 녹음 봇이 지우고(켜질 때와 하루 한 번), n8n 실행 기록은 7일 뒤 n8n이 지운다 |
 | 재시작 | 두 컨테이너 모두 `restart: unless-stopped`. 회의 중 재시작되면 10분 안이면 같은 회의로 이어 간다 |
 | 시간대 | 녹음 봇과 n8n 모두 `Asia/Seoul`. 회의 폴더 이름이 한국 시각이 된다 |
-| 워크플로 | 저장소 `workflows/`가 n8n의 `/workflows`에 읽기 전용으로 연결된다. 가져오는 방법은 [workflows/README.md](workflows/README.md) |
+| 워크플로 | 저장소 `workflows/`가 n8n의 `/workflows`에 읽기 전용으로 연결된다. 회의 녹취와 실패 알림 두 개를 가져오고, 실패 알림용 n8n API 키를 만든다. 방법은 [workflows/README.md](workflows/README.md) |
 
 n8n 편집 화면을 처음 열면 관리자 계정을 만든다. n8n 2.42.6은 로그인 쿠키를 HTTPS에서만 보내지만 Chrome은 `http://localhost`를
 안전한 주소로 보기 때문에 SSH 포트 포워딩으로도 로그인된다(Chrome에서 확인).
@@ -121,7 +121,7 @@ npm run e2e:n8n                            # 실제 n8n + 가짜 OpenAI·Discord
 `offline-reconnect-test.js`는 연결 끊김 뒤 재접속, 채널 이동, 채널 삭제, 봇 재시작 뒤 이어 가기를 가짜 음성 연결로,
 `offline-retention-test.js`는 보관 기간이 지난 회의 폴더만 지우는지를,
 `offline-approval-test.js`는 승인 버튼 ID 확인, 수정 모달, n8n 재개 요청과 판단 안내, 틀린 서명·끝난 실행·봇 클릭 처리를 가짜 상호작용으로,
-`offline-workflow-test.js`는 n8n 워크플로의 Code 노드, 차이 검사, 커밋된 워크플로 JSON이 코드와 같은지를 확인한다.
+`offline-workflow-test.js`는 n8n 워크플로(회의 녹취, 실패 알림)의 Code 노드, 차이 검사, 커밋된 워크플로 JSON이 코드와 같은지를 확인한다.
 CI는 `npm test`를 돌린다. `npm run e2e:n8n`은 Docker가 필요해 CI에 넣지 않았다.
 
 ## 작업 흐름
