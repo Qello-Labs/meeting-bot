@@ -2,9 +2,10 @@
 // 외부 API는 부르지 않아 비용이 들지 않는다. Docker가 필요하다. 녹음 파일은 내용 없는 가짜 webm이다.
 //   node scripts/e2e-n8n.js          실행 후 컨테이너를 내리고 임시 폴더를 지운다
 //   node scripts/e2e-n8n.js --keep   실패 원인을 보려고 컨테이너와 임시 폴더를 남긴다
-// 이 단계에는 실패 알림 워크플로(10단계)가 없으므로, 실패는 n8n 실행 기록의 상태와 오류 메시지로 확인한다.
+// 실패한 회차는 실패 알림 워크플로가 가짜 Discord로 보낸 알림과 n8n 실행 기록의 상태·오류 메시지로 확인한다.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,7 +16,7 @@ import { promisify } from 'node:util';
 import { TEST_CREDENTIALS } from '../test/e2e/credentials.js';
 import { TEMPLATE } from '../test/e2e/template.js';
 import { handleApprovalButton } from '../src/approval.js';
-import { buildWorkflow, credentialTypeOf } from './build-workflow.js';
+import { buildFailureWorkflow, buildWorkflow, credentialTypeOf } from './build-workflow.js';
 import { diffWorkflows, pickWorkflow } from './diff-workflow.js';
 
 const run = promisify(execFile);
@@ -33,6 +34,8 @@ const compose = (...args) =>
   run('docker', ['compose', '-p', PROJECT, '-f', COMPOSE_FILE, ...args], { env, cwd: ROOT, maxBuffer: 20_000_000 });
 
 const CHANNEL = '200000000000000002';
+// 실패 알림이 회의 채널을 모를 때 보내는 고정 채널(운영에서는 실제 회의 채널). 회의 채널과 구분되게 다른 값을 쓴다.
+const FALLBACK_CHANNEL = '200000000000000009';
 const USER_A = '400000000000000001';
 const USER_B = '400000000000000002';
 const segment = (startMs, userId, displayName) => ({
@@ -90,6 +93,9 @@ const isPost = (r) => r.method === 'POST' && DISCORD_POST.test(r.path);
 const payloadOf = (r) => (r.multipart ? JSON.parse(r.multipart.payload_json) : r.json);
 const isDraftPost = (r) => isPost(r) && Array.isArray(payloadOf(r)?.components);
 const isPatch = (r) => r.method === 'PATCH' && /^\/discord\/channels\/\d+\/messages\/\d+$/.test(r.path);
+// 실패 알림 워크플로가 보낸 알림. 그 밖의 메시지(녹취 알림, 초안, 기한 초과 알림)와 나눠 센다.
+const isFailureNotice = (r) => isPost(r) && /회의록 처리가 .*실패했습니다/.test(r.json?.content ?? '');
+const isOtherPost = (r) => isPost(r) && !isFailureNotice(r);
 
 /** 녹음 봇의 버튼 처리 코드로 실제 n8n 재개 주소를 부른다. Discord 상호작용만 흉내 내고, 누른 사람에게 보인 답을 돌려준다. */
 async function click(customId, user = {}, { embed, submit } = {}) {
@@ -249,27 +255,89 @@ async function prepare() {
     approvalWait: { amount: 30, unit: 'seconds' },
     minutesParentPage: MINUTES_PARENT,
   });
-  for (const node of workflow.nodes) {
+  const failureWorkflow = await buildFailureWorkflow({ fallbackChannelId: FALLBACK_CHANNEL });
+  for (const node of [...workflow.nodes, ...failureWorkflow.nodes]) {
     const type = credentialTypeOf(node);
     if (type) node.credentials = { [type]: { id: TEST_CREDENTIALS[type].id, name: TEST_CREDENTIALS[type].name } };
   }
-  const credentials = Object.entries(TEST_CREDENTIALS).map(([type, c]) => ({ id: c.id, name: c.name, type, data: c.data }));
+  // n8n API 키는 n8n이 뜬 뒤에 만들 수 있어 그 자격 증명은 나중에 가져온다(startN8n).
+  const credentials = Object.entries(TEST_CREDENTIALS)
+    .filter(([type]) => type !== 'httpHeaderAuth')
+    .map(([type, c]) => ({ id: c.id, name: c.name, type, data: c.data }));
   await writeFile(path.join(dir, 'import', 'workflow.json'), JSON.stringify(workflow));
+  await writeFile(path.join(dir, 'import', 'failure-workflow.json'), JSON.stringify(failureWorkflow));
   await writeFile(path.join(dir, 'import', 'credentials.json'), JSON.stringify(credentials));
-  return workflow;
+  return { workflow, failureWorkflow };
 }
 
-async function startN8n(workflow) {
-  for (const args of [
+/** 소유자 계정을 만들고 실행 읽기 범위만 가진 n8n API 키를 만든다(운영에서는 사람이 화면에서 만든다). */
+async function createApiKey() {
+  // 테스트 n8n에서만 쓰고 버리는 계정이다. 비밀번호는 실행할 때마다 만든다(n8n 규칙: 8자 이상, 숫자와 대문자 포함).
+  const owner = { email: 'e2e@example.com', firstName: 'E2E', lastName: 'Owner', password: `E2e${randomUUID()}` };
+  // healthz가 응답해도 잠깐 동안은 REST 경로가 등록되지 않아 404가 난다.
+  const setup = await waitFor('소유자 계정 만들기', async () => {
+    const r = await fetch(`${N8N}/rest/owner/setup`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(owner),
+    });
+    return r.status === 404 ? null : r;
+  }, 60_000);
+  assert.equal(setup.status, 200, `소유자 계정 ${setup.status}`);
+  const cookie = setup.headers.getSetCookie().map((c) => c.split(';')[0]).join('; ');
+  const created = await fetch(`${N8N}/rest/api-keys`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({ label: 'e2e failure alert', expiresAt: null, scopes: ['execution:read'] }),
+  });
+  assert.equal(created.status, 200, `API 키 ${created.status}`);
+  const { data } = await created.json();
+  return data.rawApiKey ?? data.apiKey;
+}
+
+async function startN8n({ workflow, failureWorkflow }) {
+  const importAll = async (commands) => {
+    for (const args of commands) await compose('run', '--rm', '--no-deps', 'n8n', ...args);
+  };
+  const up = async () => {
+    await compose('up', '-d');
+    await waitFor('n8n 기동', async () => (await fetch(`${N8N}/healthz`)).ok);
+  };
+  await importAll([
     ['import:credentials', '--input=/import/credentials.json'],
     ['import:workflow', '--input=/import/workflow.json'],
     ['publish:workflow', `--id=${workflow.id}`],
-  ]) {
-    await compose('run', '--rm', '--no-deps', 'n8n', ...args);
-  }
-  await compose('up', '-d');
-  await waitFor('n8n 기동', async () => (await fetch(`${N8N}/healthz`)).ok);
+  ]);
+  await up();
   await waitFor('mock 기동', async () => (await fetch(`${MOCK}/__requests`)).ok);
+
+  // 실행 중에 가져오면 새 DB에서 깨질 수 있어 n8n을 멈추고 가져온다.
+  const apiKey = await createApiKey();
+  const { id, name, data } = TEST_CREDENTIALS.httpHeaderAuth;
+  await writeFile(path.join(dir, 'import', 'api-credential.json'), JSON.stringify([{ id, name, type: 'httpHeaderAuth', data: { ...data, value: apiKey } }]));
+  await compose('stop', 'n8n');
+  await importAll([
+    ['import:credentials', '--input=/import/api-credential.json'],
+    ['import:workflow', '--input=/import/failure-workflow.json'],
+    ['publish:workflow', `--id=${failureWorkflow.id}`],
+  ]);
+  await up();
+}
+
+/** before 뒤에 온 실패 알림을 기다려 채널과 문구를 확인하고 실행 ID를 돌려준다. */
+async function failureNotice(before, { node, kind, channel = CHANNEL, meetingId = manifest.meetingId, clickup = false }) {
+  const notice = await waitFor(`${node} 실패 알림`, async () => (await mockRequests()).slice(before).find(isFailureNotice), 60_000);
+  assert.equal(notice.path, `/discord/channels/${channel}/messages`, `${node} 실패 알림 채널`);
+  assert.equal(notice.authorization, 'Bot dummy-e2e-discord');
+  assert.deepEqual(Object.keys(notice.json).sort(), ['allowed_mentions', 'content']);
+  assert.deepEqual(notice.json.allowed_mentions, { parse: [] });
+  const meeting = meetingId ? `회의 ${meetingId} ` : '';
+  const check = clickup ? ' ClickUp `회의록`에 페이지가 생겼는지 확인해 주세요.' : '';
+  const text = `${meeting}회의록 처리가 '${node}' 단계에서 실패했습니다. 오류: ${kind}. n8n 실행 `;
+  assert.ok(notice.json.content.startsWith(text), `${notice.json.content}`);
+  const executionId = notice.json.content.slice(text.length).match(/^(\d+)에서 확인해 주세요\./)?.[1];
+  assert.equal(notice.json.content, `${text}${executionId}에서 확인해 주세요.${check}`);
+  return executionId;
 }
 
 async function meetingEnded(body) {
@@ -338,9 +406,9 @@ async function readExecutions(workflowId) {
 let failed = false;
 try {
   step(`임시 폴더 ${dir}`);
-  const workflow = await prepare();
-  step('n8n에 테스트 자격 증명과 워크플로를 가져오고 publish');
-  await startN8n(workflow);
+  const { workflow, failureWorkflow } = await prepare();
+  step('n8n에 테스트 자격 증명과 두 워크플로를 가져오고 publish. 실패 알림용 n8n API 키는 n8n을 띄운 뒤 만든다');
+  await startN8n({ workflow, failureWorkflow });
 
   step('1회차: 회의 종료 → 발화 파일 6개 읽기 → (결정 메시지 갈래, 음성 인식 갈래) → 템플릿 읽기 → 초안 작성 → 초안 검증 → 회의 채널 알림 → 초안 메시지');
   const messages = channelMessages();
@@ -473,14 +541,31 @@ try {
   assert.equal(afterFirst.filter(isCreate).length, 1);
   assert.equal(afterFirst.filter(isPost).length, 2, '승인하면 기한 초과 알림을 보내지 않는다');
 
-  step('2회차: 녹음 폴더가 없으면 음성 인식과 알림 없이 실패');
+  step('2회차: 녹음 폴더가 없으면 음성 인식 없이 실패하고 실패 알림만 간다');
   await meetingEnded({ ...manifest, meetingId: '20261015-1400' });
   step('3회차: 발화 파일 6개 중 1개가 없으면 실패');
   await meetingEnded({ ...manifest, meetingId: '20261016-1400' });
   step('4회차: 회의 ID로 상위 폴더에 접근하려는 manifest는 실패');
   await meetingEnded({ ...manifest, meetingId: '../20261014-1400' });
-  await sleep(5_000);
-  assert.equal((await mockRequests()).length, afterFirst.length, '실패한 회차는 외부 API를 부르지 않는다');
+  const failedEarly = await waitFor('실패 알림 3건', async () => {
+    const requests = (await mockRequests()).slice(afterFirst.length);
+    return requests.filter(isFailureNotice).length >= 3 ? requests : null;
+  }, 60_000);
+  await sleep(3_000);
+  assert.equal((await mockRequests()).length, afterFirst.length + 3, '실패한 회차는 실패 알림 말고는 외부 API를 부르지 않는다');
+  // 세 실행은 거의 동시에 끝나 알림 순서가 바뀔 수 있다. 회의 ID가 다른 것으로 가린다.
+  const earlyNotice = (text) => failedEarly.find((r) => r.json.content.startsWith(text));
+  for (const meetingId of ['20261015-1400', '20261016-1400']) {
+    const r = earlyNotice(`회의 ${meetingId} `);
+    assert.equal(r.path, `/discord/channels/${CHANNEL}/messages`);
+    assert.match(r.json.content, new RegExp(`^회의 ${meetingId} 회의록 처리가 '발화 파일 확인' 단계에서 실패했습니다\\. 오류: 검사 중단\\. n8n 실행 \\d+에서 확인해 주세요\\.$`));
+  }
+  // manifest 형식이 틀리면 customData를 적지 않아 고정 채널로 보낸다.
+  const badManifest = earlyNotice('회의록 처리가');
+  assert.equal(badManifest.path, `/discord/channels/${FALLBACK_CHANNEL}/messages`);
+  assert.match(badManifest.json.content, /^회의록 처리가 '녹음 정보 확인' 단계에서 실패했습니다\. 오류: 검사 중단\. n8n 실행 \d+에서 확인해 주세요\.$/);
+  assert.ok(failedEarly.every((r) => !r.json.content.includes('../')), '형식이 틀린 회의 ID는 알림에 넣지 않는다');
+  console.log(`  실패 알림: ${failedEarly.map((r) => r.json.content).join(' / ')}`);
 
   step('5회차: 음성 인식 한 번 실패(500) → 노드 재시도 후 성공. 4,096자가 넘는 초안은 .md 파일로 붙이고, 거절한다');
   await fetch(`${MOCK}/__fail-next-transcription`, { method: 'POST' });
@@ -507,7 +592,7 @@ try {
   assert.equal(retried.filter((r) => r.status === 200).length >= 6, true);
   console.log(`  음성 인식 요청 ${retried.length}건(실패 1건 포함). 노드 전체를 다시 시도해 성공한 발화도 다시 보냈습니다`);
 
-  step('6회차: 결정 메시지 조회가 계속 실패(500)하면 다시 시도한 뒤 실행이 실패하고, 음성 인식과 알림은 하지 않는다');
+  step('6회차: 결정 메시지 조회가 계속 실패(500)하면 다시 시도한 뒤 실행이 실패하고, 음성 인식과 녹취 알림 없이 실패 알림만 간다');
   await fetch(`${MOCK}/__messages-fail`, { method: 'POST' });
   const beforeSixth = (await mockRequests()).length;
   await meetingEnded(manifest);
@@ -519,18 +604,20 @@ try {
   // 오류 응답에서도 페이지 넘김 식이 깨지지 않아 노드가 실패하고, 노드 재시도로 3번 요청한다.
   assert.equal(failedFetches, 3);
   console.log(`  조회 500 응답 ${failedFetches}번`);
-  assert.equal(sixth.filter(isPost).length, 0, '조회가 실패하면 알림을 보내지 않는다');
+  assert.equal(sixth.filter(isOtherPost).length, 0, '조회가 실패하면 녹취 알림을 보내지 않는다');
+  await failureNotice(beforeSixth, { node: '결정 메시지 조회', kind: '외부 서비스 응답 오류(HTTP 500)' });
   assert.equal(byPath(sixth, TRANSCRIBE).length, 0, 'Discord 쪽이 실패하면 음성 인식(유료)을 부르지 않는다');
   assert.equal(byPath(sixth, DRAFT).length, 0, 'Discord 쪽이 실패하면 GPT(유료)를 부르지 않는다');
 
-  step('7회차: ✅ 메시지 내용이 비어 있으면(Message Content Intent 꺼짐) 실패하고, 음성 인식과 알림은 하지 않는다');
+  step('7회차: ✅ 메시지 내용이 비어 있으면(Message Content Intent 꺼짐) 실패하고, 음성 인식과 녹취 알림 없이 실패 알림만 간다');
   await setMessages(channelMessages({ blankDecision: true }));
   const beforeSeventh = (await mockRequests()).length;
   await meetingEnded(manifest);
   await waitFor('메시지 조회', async () => (await mockRequests()).slice(beforeSeventh).filter((r) => isGet(r) && r.status === 200).length >= 3 || null);
   await sleep(3_000);
   const seventh = (await mockRequests()).slice(beforeSeventh);
-  assert.equal(seventh.filter(isPost).length, 0);
+  assert.equal(seventh.filter(isOtherPost).length, 0);
+  await failureNotice(beforeSeventh, { node: '결정 메시지 고르기', kind: '검사 중단' });
   assert.equal(byPath(seventh, TRANSCRIBE).length, 0, 'Discord 쪽이 실패하면 음성 인식(유료)을 부르지 않는다');
   assert.equal(byPath(seventh, DRAFT).length, 0);
 
@@ -556,7 +643,8 @@ try {
     await sleep(3_000);
     const requests = (await mockRequests()).slice(before);
     assert.equal(byPath(requests, DRAFT).length, 1, '잘림·거절은 HTTP 200이라 다시 부르지 않는다');
-    assert.equal(requests.filter(isPost).length, 0, '초안이 없으면 알림을 보내지 않고 실행이 실패한다');
+    assert.equal(requests.filter(isOtherPost).length, 0, '초안이 없으면 녹취 알림을 보내지 않고 실행이 실패한다');
+    await failureNotice(before, { node: '초안 검증', kind: '검사 중단' });
   }
   step('9회차: 응답이 max_output_tokens에서 잘리면(incomplete) 실행이 실패한다');
   await draftFails(gptResponse('| 필드 | 값 |', { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } }));
@@ -565,7 +653,7 @@ try {
     output: [{ type: 'message', id: 'msg_e2e', role: 'assistant', status: 'completed', content: [{ type: 'refusal', refusal: 'e2e' }] }],
   }));
 
-  step('11회차: 템플릿 조회가 계속 실패(500)하면 다시 시도한 뒤 실행이 실패하고, GPT와 알림은 하지 않는다');
+  step('11회차: 템플릿 조회가 계속 실패(500)하면 다시 시도한 뒤 실행이 실패하고, GPT와 녹취 알림 없이 실패 알림만 간다');
   await setDraft(gptResponse(draftFor(messages)));
   await post('__template-fail');
   const beforeEleventh = (await mockRequests()).length;
@@ -575,7 +663,8 @@ try {
   const eleventh = (await mockRequests()).slice(beforeEleventh);
   assert.equal(byPath(eleventh, TEMPLATE_PAGE).filter((r) => r.status === 500).length, 3, '노드 재시도로 3번 요청한다');
   assert.equal(byPath(eleventh, DRAFT).length, 0);
-  assert.equal(eleventh.filter(isPost).length, 0);
+  assert.equal(eleventh.filter(isOtherPost).length, 0);
+  await failureNotice(beforeEleventh, { node: '템플릿 읽기', kind: '외부 서비스 응답 오류(HTTP 500)' });
 
   step('12회차: 기한(테스트 30초) 안에 아무도 누르지 않으면 기한 초과로 재개되어 버튼을 지우고 답장으로 알린다');
   await setTemplate(TEMPLATE);
@@ -614,20 +703,47 @@ try {
   assert.equal(thirteenth.filter(isListing).length, 1);
   assert.equal(thirteenth.filter(isCreate).length, 0, '같은 이름이 있으면 쓰지 않는다');
 
-  step('n8n에서 내보낸 워크플로가 가져온 것과 동작이 같은지 차이 검사');
-  await compose('exec', '-T', 'n8n', 'n8n', 'export:workflow', `--id=${workflow.id}`, '--output=/home/node/.n8n/exported.json');
-  const exported = pickWorkflow(JSON.parse(await readFile(path.join(dir, 'n8n', 'exported.json'), 'utf8')), workflow);
-  assert.deepEqual(diffWorkflows(workflow, exported), []);
+  step('14회차: 승인 뒤 페이지를 다시 읽지 못하면(500) 실행이 실패하고, 실패 알림이 ClickUp 확인을 알린 뒤 초안 메시지를 실패로 고친다');
+  // 재개된 실행이 실패해도 실패 알림이 돌고, 기다리기 전에 적은 customData가 남는지 확인한다(설계 5절 "실패 알림").
+  await post('__minutes-clear');
+  await post('__readback-fail');
+  const beforeFourteenth = (await mockRequests()).length;
+  await meetingEnded(manifest);
+  const fourteenthDraft = await waitFor('초안 메시지', async () => (await mockRequests()).slice(beforeFourteenth).find(isDraftPost));
+  assert.deepEqual(await click(buttonIds(payloadOf(fourteenthDraft).components)[0]), accepted('승인'));
+  const readBackFailedId = await failureNotice(beforeFourteenth, {
+    node: '페이지 다시 읽기', kind: '외부 서비스 응답 오류(HTTP 500)', clickup: true,
+  });
+  const fourteenth = await waitFor('초안 메시지 실패 표시', async () => {
+    const requests = (await mockRequests()).slice(beforeFourteenth);
+    return requests.filter(isPatch).length >= 2 ? requests : null;
+  });
+  const [approvedFourteenth, failedPatch] = fourteenth.filter(isPatch);
+  assert.deepEqual(approvedFourteenth.json, settled('승인(도연). ClickUp에 쓰는 중입니다'));
+  assert.equal(failedPatch.path, approvedFourteenth.path, '같은 초안 메시지를 고친다');
+  assert.deepEqual(failedPatch.json, settled(`처리 중 실패했습니다(n8n 실행 ${readBackFailedId}). ClickUp \`회의록\`에 페이지가 생겼는지 확인해 주세요.`));
+  assert.ok(fourteenth.indexOf(fourteenth.find(isFailureNotice)) < fourteenth.indexOf(failedPatch), '알림을 먼저 보낸다');
+  assert.equal(fourteenth.filter(isCreate).length, 1);
+  assert.equal(fourteenth.filter((r) => isReadBack(r) && r.status === 500).length, 3, '다시 읽기는 노드 재시도로 3번 요청한다');
+
+  step('n8n에서 내보낸 두 워크플로가 가져온 것과 동작이 같은지 차이 검사');
+  for (const wf of [workflow, failureWorkflow]) {
+    await compose('exec', '-T', 'n8n', 'n8n', 'export:workflow', `--id=${wf.id}`, '--output=/home/node/.n8n/exported.json');
+    const exported = pickWorkflow(JSON.parse(await readFile(path.join(dir, 'n8n', 'exported.json'), 'utf8')), wf);
+    assert.deepEqual(diffWorkflows(wf, exported), [], wf.name);
+  }
 
   step('n8n 실행 기록 확인');
   const { executions, staticData } = await readExecutions(workflow.id);
   // 회의록을 쓴 뒤 다음 회의의 결정 메시지는 이번 회의 종료 뒤부터 모은다.
   assert.equal(staticData.global?.lastMeetingEndedAt, manifest.endedAt);
   assert.deepEqual(executions.map((e) => e.status), [
-    'success', 'error', 'error', 'error', 'success', 'error', 'error', 'success', 'error', 'error', 'error', 'success', 'success',
+    'success', 'error', 'error', 'error', 'success', 'error', 'error', 'success', 'error', 'error', 'error', 'success', 'success', 'error',
   ]);
-  const [ok, noFolder, oneMissing, badId, rejectedRun, fetchFailed, blank, badEvidence, truncated, refused, noTemplate, timedOut, duplicated] =
+  const [ok, noFolder, oneMissing, badId, rejectedRun, fetchFailed, blank, badEvidence, truncated, refused, noTemplate, timedOut, duplicated, readBackFailed] =
     executions.map((e) => e.data);
+  assert.equal(unflatten(readBackFailed).resultData.lastNodeExecuted, '페이지 다시 읽기');
+  assert.equal(executions.at(-1).id, Number(readBackFailedId), '알림의 실행 ID가 실패한 실행이다');
   for (const line of [
     '[00:00:03] 참석자 2: 3초 발화',
     '[00:00:12] 도연: 12초 발화',
@@ -678,6 +794,14 @@ try {
   assert.equal(unflatten(badEvidence).resultData.lastNodeExecuted, '초안 메시지 만들기');
   assert.deepEqual(nodeOutput(badEvidence, '초안 메시지 만들기'), []);
   console.log(`  실행 ${executions.length}건: ${executions.map((e) => e.status).join(', ')}`);
+
+  // 실패 알림은 실패한 회의 녹취 실행(9건)마다 한 번씩 돌았고 모두 성공했다. 실행 읽기가 n8n API로 customData를 받았다.
+  const failures = (await readExecutions(failureWorkflow.id)).executions;
+  assert.deepEqual(failures.map((e) => e.status), Array(9).fill('success'));
+  const customDataOf = (data) => nodeOutput(data, '실행 읽기')[0]?.customData;
+  assert.deepEqual(failures.map((e) => customDataOf(e.data)?.draftMessageId ?? null).filter(Boolean), [approvedFourteenth.path.split('/').pop()]);
+  assert.equal(failures.filter((e) => customDataOf(e.data)?.textChannelId === CHANNEL).length, 8, 'manifest 형식이 틀린 1건만 채널을 모른다');
+  console.log(`  실패 알림 실행 ${failures.length}건: ${failures.map((e) => e.status).join(', ')}`);
 
   console.log('E2E PASS');
 } catch (error) {

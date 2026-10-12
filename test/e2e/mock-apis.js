@@ -8,6 +8,8 @@
 //   POST /__template-fail             템플릿 페이지 조회가 계속 500을 낸다
 //   POST /__minutes                   회의록 문서의 상위 페이지를 정한다({ parentPageId }). 만든 페이지는 이 아래에 쌓여 페이지 목록에 나온다
 //   POST /__minutes-alter             다음에 만드는 페이지를 다시 읽을 때 본문 한 줄을 바꿔 준다(대조 확인용)
+//   POST /__minutes-clear             만든 페이지를 모두 지운다(같은 회의를 다시 쓰게 할 때)
+//   POST /__readback-fail             만든 페이지를 다시 읽으면 계속 500을 낸다(승인 뒤 실패 알림 확인용)
 //   POST /__llm                       Responses API가 낼 응답을 정한다({ status, body }). 바꿀 때까지 같은 응답을 낸다
 import { readFileSync } from 'node:fs';
 import http from 'node:http';
@@ -22,6 +24,7 @@ let templateContent = null;
 let minutesParent = null;
 const createdPages = new Map();
 let alterNext = false;
+let readbackFail = false;
 let templateFail = false;
 let llm = null;
 
@@ -96,6 +99,7 @@ function route(req, path, query, body) {
   }
   const page = /^\/clickup\/api\/v3\/workspaces\/([^/]+)\/docs\/([^/]+)\/pages\/([^/]+)$/.exec(path);
   if (req.method === 'GET' && page && createdPages.has(page[3])) {
+    if (readbackFail) return { status: 500, body: { err: 'e2e injected failure' } };
     return { status: 200, body: { ...createdPages.get(page[3]), doc_id: page[2], workspace_id: Number(page[1]) } };
   }
   if (req.method === 'GET' && page) {
@@ -151,6 +155,14 @@ function handler(prefix) {
       if (url.pathname === '/__minutes-alter') {
         alterNext = true;
         return reply(200, { alterNext });
+      }
+      if (url.pathname === '/__minutes-clear') {
+        createdPages.clear();
+        return reply(200, { pages: 0 });
+      }
+      if (url.pathname === '/__readback-fail') {
+        readbackFail = true;
+        return reply(200, { readbackFail });
       }
       if (url.pathname === '/__template-fail') {
         templateFail = true;
