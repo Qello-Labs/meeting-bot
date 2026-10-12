@@ -2,7 +2,7 @@
 // 실제 n8n에서 도는지는 Docker E2E로 따로 확인한다. 녹음과 참석자 정보는 모두 지어낸 값이다.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { WORKFLOW_FILE, buildWorkflow, credentialTypeOf, serialize } from './build-workflow.js';
+import { FAILURE_WORKFLOW_FILE, WORKFLOW_FILE, buildFailureWorkflow, buildWorkflow, credentialTypeOf, serialize } from './build-workflow.js';
 import { diffWorkflows, pickWorkflow } from './diff-workflow.js';
 import { TEMPLATE } from '../test/e2e/template.js';
 
@@ -13,8 +13,27 @@ const AsyncFunction = (async () => {}).constructor;
 const SIGNATURE = 'ab'.repeat(32);
 const EXECUTION = { id: '4821', resumeUrl: `http://localhost:5678/webhook-waiting/4821?signature=${SIGNATURE}` };
 
-/** n8n Code 노드와 같은 이름($input, $, $getWorkflowStaticData, $execution)으로 노드 코드를 실행한다. */
-function harness(staticData = {}, execution = EXECUTION, wf = workflow) {
+/**
+ * $execution.customData. n8n 2.42.6(n8n-core execution-metadata.js)과 같이 키는 글자·숫자·밑줄만, 값은 문자열·숫자만 받고
+ * 문자열로 저장한다. 키가 10개 차면 새 키는 조용히 버린다.
+ */
+function customDataStore() {
+  const data = {};
+  return {
+    set(key, value) {
+      if (typeof key !== 'string' || key.replace(/[\p{L}\p{N}\p{M}_]/gu, '').length !== 0) throw new Error(`customData 키가 잘못됐습니다: ${key}`);
+      if (!['string', 'number', 'bigint'].includes(typeof value)) throw new Error(`customData 값이 문자열·숫자가 아닙니다: ${key}`);
+      if (!(key in data) && Object.keys(data).length >= 10) return;
+      data[key] = String(value);
+    },
+    get: (key) => data[key],
+    getAll: () => ({ ...data }),
+  };
+}
+
+/** n8n Code 노드와 같은 이름($input, $, $getWorkflowStaticData, $execution)으로 노드 코드를 실행한다. customData는 h.customData()로 본다. */
+function harness(staticData = {}, baseExecution = EXECUTION, wf = workflow) {
+  const execution = { ...baseExecution, customData: customDataStore() };
   const outputs = new Map();
   const items = (name) => {
     if (!outputs.has(name)) throw new Error(`${name} 노드 출력이 없습니다`);
@@ -22,6 +41,7 @@ function harness(staticData = {}, execution = EXECUTION, wf = workflow) {
   };
   const ref = (name) => ({ first: () => items(name)[0], all: () => items(name), isExecuted: outputs.has(name) });
   return {
+    customData: () => execution.customData.getAll(),
     set(name, list) {
       outputs.set(name, list);
     },
@@ -70,6 +90,8 @@ async function runUntilFiles(h, body) {
 {
   const h = harness();
   const list = await runUntilFiles(h, manifest);
+  // 실패 알림이 채널을 찾도록 회의 ID와 채널 ID를 customData에 적는다(설계 5절 "실패 알림").
+  assert.deepEqual(h.customData(), { meetingId: '20261014-1400', textChannelId: CHANNEL });
   assert.deepEqual(
     list.map((item) => item.json.path),
     manifest.segments.map((s) => `/recordings/20261014-1400/segments/${s.file}`),
@@ -132,6 +154,8 @@ for (const [label, body, expected] of [
     assert.ok(!error.message.includes('400000000000000'), `${label}: 오류 메시지에 ID가 없다`);
     return true;
   });
+  // 확인하기 전에 적지 않는다. 형식이 틀린 채널 ID가 실패 알림의 Discord 요청 주소에 들어가면 안 된다.
+  assert.deepEqual(h.customData(), {}, `${label}: customData를 적지 않는다`);
 }
 
 // 파일 읽기 노드가 파일을 못 찾으면 alwaysOutputData로 빈 항목 하나를 낸다. 조용히 넘어가지 않고 실패해야 한다.
@@ -824,7 +848,9 @@ const settled = (text) => ({ content: `회의 20261014-1400 회의록 초안: ${
 
 // 승인·거절: 판 번호가 맞으면 받음으로 답하고, 버튼을 지우고 결과와 누른 사람 이름을 본문에 적는다.
 {
-  const approve = (await decide(resumed({ decision: 'approve', rev: 1, by: '도연' }))).result;
+  const { h, result: approve } = await decide(resumed({ decision: 'approve', rev: 1, by: '도연' }));
+  // 승인 뒤 실패하면 실패 알림이 이 메시지를 고친다(설계 5절 "실패 알림").
+  assert.deepEqual(h.customData(), { meetingId: '20261014-1400', textChannelId: CHANNEL, draftMessageId: MESSAGE_ID });
   assert.deepEqual([approve.outcome, approve.by, approve.rev, approve.textChannelId, approve.messageId], ['approve', '도연', 1, CHANNEL, MESSAGE_ID]);
   assert.deepEqual(approve.response, { result: 'accepted', decision: 'approve' });
   assert.deepEqual(approve.body, settled('승인(도연). ClickUp에 쓰는 중입니다'));
@@ -835,8 +861,9 @@ const settled = (text) => ({ content: `회의 20261014-1400 회의록 초안: ${
 
 // 긴 초안은 초안 보내기(첨부)로 보냈다. 결정 읽기는 실제로 실행된 보내기 노드에서 메시지 ID를 읽는다.
 {
-  const { result } = await decide(resumed({ decision: 'approve', rev: 1, by: '도연' }), { sentBy: '초안 보내기(첨부)' });
+  const { h, result } = await decide(resumed({ decision: 'approve', rev: 1, by: '도연' }), { sentBy: '초안 보내기(첨부)' });
   assert.deepEqual([result.messageId, result.textChannelId], [MESSAGE_ID, CHANNEL]);
+  assert.equal(h.customData().draftMessageId, MESSAGE_ID);
 }
 
 // 판 번호가 지금 판과 다르면(늦은 클릭, 동시 수정) 반영하지 않고 "이미 바뀜"으로 답한다. 본문을 고치지 않는다.
@@ -1130,6 +1157,160 @@ const PAGE_LINK = 'https://app.clickup.com/1100370000016776/v/dc/z8rzdfhxc8-98/z
   // 수정 검증과 초안 검증은 같은 규칙 코드(shared/draft-rules.js)를 쓴다.
   const rules = await readFile(new URL('../workflows/src/shared/draft-rules.js', import.meta.url), 'utf8');
   for (const name of ['초안 검증', '결정 읽기']) assert.ok(nodeOf(name).parameters.jsCode.includes(rules), `${name}에 같은 검증 규칙이 있다`);
+}
+
+// 실패 알림 워크플로(설계 5절 "실패 알림"). 실패(Error Trigger)가 주는 값은 n8n 2.42.6 실험에서 본 모양을 따른다.
+const failureWorkflow = await buildFailureWorkflow();
+const MEETING_CHANNEL = '1547149294015094817';
+const SECRETS = ['녹취 원문 문장', 'SECRETQUERY', '@everyone', 'localhost:5678', '사람이 쓴 오류 문구'];
+/** 실패한 실행의 Error Trigger 출력. 요청 본문, 주소, 오류 문구에 알림에 들어가면 안 되는 값을 넣어 둔다. */
+const failed = ({ node = '초안 작성', type = 'n8n-nodes-base.httpRequest', httpCode = null, id = '123' } = {}) => ({
+  execution: {
+    id,
+    url: `http://localhost:5678/workflow/MeetingTranscribe/executions/${id}`,
+    error: {
+      name: type === 'n8n-nodes-base.code' ? 'WrappedExecutionError' : 'NodeApiError',
+      message: '사람이 쓴 오류 문구 @everyone',
+      messages: ['사람이 쓴 오류 문구'],
+      ...(httpCode === null ? {} : { httpCode }),
+      // Code 노드가 던진 오류에는 node와 context가 없다(n8n 2.42.6 실험).
+      ...(type === 'n8n-nodes-base.code' ? {} : {
+        context: { request: { body: { input: '녹취 원문 문장' }, uri: 'https://api.openai.com/v1/responses?key=SECRETQUERY' } },
+        node: { name: node, type, parameters: { jsonBody: '녹취 원문 문장' } },
+      }),
+    },
+    lastNodeExecuted: node,
+    mode: 'webhook',
+  },
+  workflow: { id: 'MeetingTranscribe', name: '회의 녹취' },
+});
+/** 실행 읽기(n8n API) 출력. read가 null이면 API 호출이 실패해 오류 항목이 온 경우다. */
+async function notify(trigger, read) {
+  const h = harness({}, EXECUTION, failureWorkflow);
+  h.set('실패', [{ json: trigger }]);
+  h.set('실행 읽기', [{ json: read ?? { error: { message: 'connect ECONNREFUSED 127.0.0.1:5678' } } }]);
+  const [result] = await h.code('알림 만들기', '실행 읽기');
+  const text = JSON.stringify(result.json);
+  for (const secret of SECRETS) assert.ok(!text.includes(secret), `알림에 ${secret}가 없다`);
+  return result.json;
+}
+const readOf = (customData) => ({ id: '123', status: 'error', customData, data: { resultData: { runData: { '녹음 정보 확인': '녹취 원문 문장' } } } });
+const noticeOf = (content) => ({ content, allowed_mentions: { parse: [] } });
+
+// 회의 채널을 알면 그 채널로, 코드가 정한 값만 보낸다. 상태 코드가 있으면 외부 서비스 응답 오류다.
+{
+  const json = await notify(failed({ httpCode: '429' }), readOf({ meetingId: '20261014-1400', textChannelId: CHANNEL }));
+  assert.deepEqual(json, {
+    channelId: CHANNEL,
+    draftMessageId: null,
+    notice: noticeOf("회의 20261014-1400 회의록 처리가 '초안 작성' 단계에서 실패했습니다. 오류: 외부 서비스 응답 오류(HTTP 429). n8n 실행 123에서 확인해 주세요."),
+    draftEdit: null,
+  });
+}
+
+// 오류 종류: 시스템 오류 코드는 연결 실패, Code 노드는 검사 중단, 그 밖은 기타 오류. 형식이 다른 코드는 쓰지 않는다.
+for (const [trigger, kind] of [
+  [failed({ httpCode: 'ECONNREFUSED' }), '연결 실패(ECONNREFUSED)'],
+  [failed({ node: '초안 검증', type: 'n8n-nodes-base.code' }), '검사 중단'],
+  [failed(), '기타 오류'],
+  [failed({ httpCode: '429 @everyone' }), '기타 오류'],
+  [failed({ httpCode: 'Ex<script>' }), '기타 오류'],
+]) {
+  const json = await notify(trigger, readOf({ meetingId: '20261014-1400', textChannelId: CHANNEL }));
+  assert.ok(json.notice.content.includes(`오류: ${kind}.`), `${kind}: ${json.notice.content}`);
+}
+
+// manifest 확인 전에 실패하면 customData가 없다. 실제 회의 채널로 보내고 회의 ID는 빼고 쓴다.
+{
+  const json = await notify(failed({ node: '녹음 정보 확인', type: 'n8n-nodes-base.code' }), readOf(undefined));
+  assert.equal(json.channelId, MEETING_CHANNEL);
+  assert.deepEqual(json.notice, noticeOf("회의록 처리가 '녹음 정보 확인' 단계에서 실패했습니다. 오류: 검사 중단. n8n 실행 123에서 확인해 주세요."));
+}
+
+// 실행 읽기가 실패하면(오류 항목) 실제 회의 채널로 보낸다.
+{
+  const json = await notify(failed({ httpCode: '500' }), null);
+  assert.deepEqual([json.channelId, json.draftEdit], [MEETING_CHANNEL, null]);
+  assert.ok(json.notice.content.startsWith("회의록 처리가 '초안 작성' 단계에서"));
+}
+
+// customData 값은 형식이 맞을 때만 쓴다. 채널 ID와 메시지 ID는 Discord 요청 주소에 들어간다.
+{
+  const json = await notify(failed({ httpCode: '500' }), readOf({ meetingId: '../x', textChannelId: '1/../../users/@me', draftMessageId: '1?x=1' }));
+  assert.deepEqual([json.channelId, json.draftMessageId, json.draftEdit], [MEETING_CHANNEL, null, null]);
+  assert.ok(!json.notice.content.includes('../x'));
+}
+
+// 메시지 ID가 있어도 회의 채널을 모르면 초안 메시지를 고치지 않는다(고정 채널에 그 메시지가 없다).
+{
+  const json = await notify(failed({ httpCode: '500' }), readOf({ meetingId: '20261014-1400', textChannelId: 'x', draftMessageId: MESSAGE_ID }));
+  assert.deepEqual([json.channelId, json.draftEdit], [MEETING_CHANNEL, null]);
+}
+
+// 워크플로에 없는 노드 이름(화면에서 바꾼 이름 등)은 쓰지 않는다. 실행 ID도 숫자만 쓴다.
+{
+  const json = await notify(failed({ node: '사람이 쓴 오류 문구', id: '12; @everyone' }), readOf({ meetingId: '20261014-1400', textChannelId: CHANNEL }));
+  assert.equal(json.notice.content, '회의 20261014-1400 회의록 처리가 알 수 없는 단계에서 실패했습니다. 오류: 기타 오류. n8n 실행 알 수 없음에서 확인해 주세요.');
+}
+
+// 승인 뒤 페이지 만들기와 그 뒤에서 실패하면 ClickUp 확인을 덧붙이고, 초안 메시지를 실패로 고친다(버튼을 지운다).
+for (const node of ['페이지 만들기', '페이지 다시 읽기', '내용 대조', '쓰기 결과 표시']) {
+  const json = await notify(failed({ node, httpCode: '500' }), readOf({ meetingId: '20261014-1400', textChannelId: CHANNEL, draftMessageId: MESSAGE_ID }));
+  const check = ' ClickUp `회의록`에 페이지가 생겼는지 확인해 주세요.';
+  assert.equal(json.notice.content, `회의 20261014-1400 회의록 처리가 '${node}' 단계에서 실패했습니다. 오류: 외부 서비스 응답 오류(HTTP 500). n8n 실행 123에서 확인해 주세요.${check}`);
+  assert.equal(json.draftMessageId, MESSAGE_ID);
+  assert.deepEqual(json.draftEdit, { content: `회의 20261014-1400 회의록 초안: 처리 중 실패했습니다(n8n 실행 123).${check}`, components: [], allowed_mentions: { parse: [] } });
+}
+
+// 승인 뒤라도 페이지 만들기 전(쓰기 판단 등)에 실패하면 ClickUp 확인은 덧붙이지 않는다.
+{
+  const json = await notify(failed({ node: '페이지 목록 읽기', httpCode: '500' }), readOf({ meetingId: '20261014-1400', textChannelId: CHANNEL, draftMessageId: MESSAGE_ID }));
+  assert.ok(!json.notice.content.includes('ClickUp'));
+  assert.equal(json.draftEdit.content, '회의 20261014-1400 회의록 초안: 처리 중 실패했습니다(n8n 실행 123).');
+}
+
+// 실패 알림 워크플로 구조와 회의 녹취 워크플로 연결.
+{
+  const committed = await readFile(FAILURE_WORKFLOW_FILE, 'utf8');
+  assert.equal(committed, serialize(failureWorkflow), 'node scripts/build-workflow.js로 다시 만드세요');
+  assert.ok(failureWorkflow.nodes.every((node) => node.credentials === undefined));
+  assert.equal(workflow.settings.errorWorkflow, failureWorkflow.id, '회의 녹취가 실패하면 실패 알림 워크플로가 돈다');
+  assert.equal(failureWorkflow.settings.errorWorkflow, undefined);
+  const nodeOf = (name) => failureWorkflow.nodes.find((n) => n.name === name);
+  assert.deepEqual(failureWorkflow.nodes.map((n) => n.name), ['실패', '실행 읽기', '알림 만들기', '실패 알림', '초안 메시지 확인', '초안 메시지 고치기']);
+  assert.equal(nodeOf('실패').type, 'n8n-nodes-base.errorTrigger');
+  const link = (node) => ({ node, type: 'main', index: 0 });
+  const outputs = (name) => failureWorkflow.connections[name]?.main;
+  assert.deepEqual(outputs('실패'), [[link('실행 읽기')]]);
+  assert.deepEqual(outputs('실행 읽기'), [[link('알림 만들기')]]);
+  assert.deepEqual(outputs('알림 만들기'), [[link('실패 알림')]]);
+  assert.deepEqual(outputs('실패 알림'), [[link('초안 메시지 확인')]], '알림을 먼저 보낸 뒤 메시지를 고친다');
+  assert.deepEqual(outputs('초안 메시지 확인'), [[link('초안 메시지 고치기')]]);
+
+  const read = nodeOf('실행 읽기');
+  assert.deepEqual([read.parameters.method, read.parameters.url], ['GET', '=http://127.0.0.1:5678/api/v1/executions/{{ $json.execution.id }}']);
+  assert.deepEqual(read.parameters.queryParameters.parameters, [{ name: 'includeData', value: 'true' }], 'customData는 includeData=true일 때만 온다');
+  assert.deepEqual([read.parameters.authentication, credentialTypeOf(read)], ['genericCredentialType', 'httpHeaderAuth']);
+  assert.deepEqual([read.retryOnFail, read.onError], [true, 'continueRegularOutput'], '읽기가 실패해도 고정 채널로 알린다');
+
+  const send = nodeOf('실패 알림');
+  assert.deepEqual([send.parameters.method, send.parameters.url, credentialTypeOf(send)], ['POST', '=https://discord.com/api/v10/channels/{{ $json.channelId }}/messages', 'discordBotApi']);
+  assert.equal(send.parameters.jsonBody, '={{ JSON.stringify($json.notice) }}');
+  assert.deepEqual([send.retryOnFail, send.onError], [undefined, undefined], '다시 보내면 알림이 두 번 갈 수 있다');
+
+  assert.deepEqual(nodeOf('초안 메시지 확인').parameters.conditions.conditions.map((c) => c.leftValue), ["={{ $('알림 만들기').first().json.draftEdit !== null }}"]);
+  const edit = nodeOf('초안 메시지 고치기');
+  assert.deepEqual([edit.parameters.method, credentialTypeOf(edit), edit.retryOnFail], ['PATCH', 'discordBotApi', true]);
+  assert.equal(edit.parameters.url, "=https://discord.com/api/v10/channels/{{ $('알림 만들기').first().json.channelId }}/messages/{{ $('알림 만들기').first().json.draftMessageId }}");
+  assert.equal(edit.parameters.jsonBody, "={{ JSON.stringify($('알림 만들기').first().json.draftEdit) }}");
+
+  // 알림에 쓰는 노드 이름은 회의 녹취 워크플로의 노드 이름과 같다. 고정 채널은 빌드 옵션으로 바꿀 수 있다(E2E).
+  const notice = nodeOf('알림 만들기').parameters.jsCode;
+  const types = JSON.parse(notice.match(/^const NODE_TYPES = (\{.*\});$/m)[1]);
+  assert.deepEqual(types, Object.fromEntries(workflow.nodes.map((n) => [n.name, n.type])));
+  assert.ok(notice.startsWith(`const FALLBACK_CHANNEL_ID = "${MEETING_CHANNEL}";`));
+  const other = await buildFailureWorkflow({ fallbackChannelId: CHANNEL });
+  assert.ok(other.nodes.find((n) => n.name === '알림 만들기').parameters.jsCode.startsWith(`const FALLBACK_CHANNEL_ID = "${CHANNEL}";`));
 }
 
 console.log('회의 녹취 워크플로 오프라인 테스트 통과');

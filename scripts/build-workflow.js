@@ -1,5 +1,5 @@
 // workflows/src의 Code 노드 코드로 n8n에 가져올 워크플로 JSON을 만든다. 워크플로의 원본은 이 스크립트와 workflows/src다.
-//   node scripts/build-workflow.js           workflows/meeting-transcribe.json을 다시 쓴다
+//   node scripts/build-workflow.js           workflows/meeting-transcribe.json, workflows/meeting-transcribe-failure.json을 다시 쓴다
 //   node scripts/build-workflow.js --check   커밋된 JSON이 코드와 같은지만 확인한다
 // 자격 증명은 넣지 않는다. n8n 화면에서 등록하고 노드마다 고른다(workflows/README.md).
 import { readFile, writeFile } from 'node:fs/promises';
@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const WORKFLOW_FILE = path.join(ROOT, 'workflows/meeting-transcribe.json');
+export const FAILURE_WORKFLOW_FILE = path.join(ROOT, 'workflows/meeting-transcribe-failure.json');
+const FAILURE_WORKFLOW_ID = 'MeetingFailAlert';
 
 const OPENAI_BASE = 'https://api.openai.com/v1';
 const DISCORD_BASE = 'https://discord.com/api/v10';
@@ -23,6 +25,11 @@ const CLICKUP_WORKSPACE = '1100370000016776';
 const MINUTES_DOC = 'z8rzdfhxc8-98';
 const MINUTES_PARENT_PAGE = 'z8rzdfhxc8-38'; // `회의록`
 
+// 실패 알림(설계 5절 "실패 알림"). 실패한 실행을 n8n 컨테이너 안에서 n8n API로 읽는다. 회의 채널을 모르면 실제 회의 채널로 보낸다
+// (2026-10-11 사용자 결정, 채널 ID는 코드 상수).
+const N8N_API_BASE = 'http://127.0.0.1:5678/api/v1';
+const MEETING_CHANNEL = '1547149294015094817';
+
 // Discord 메시지 ID는 길이가 다를 수 있어 길이부터 비교한다. 받은 메시지 중 가장 큰 ID를 다음 after로 쓴다.
 // n8n 2.42.6은 첫 요청 전에도 이 식을 계산하고(그때는 응답이 없다), 오류 응답은 본문이 배열이 아니다.
 // 식이 깨지면 n8n이 페이지 넘김을 멈추고 오류 본문을 출력으로 내므로(E2E에서 확인) 배열이 아닐 때도 계산되게 하고,
@@ -35,7 +42,8 @@ const NEWEST_ID = `(Array.isArray($response.body) ? $response.body.map((m) => m.
 const CREDENTIAL_TYPES = { 'n8n-nodes-base.discord': 'discordBotApi' };
 
 /** 노드에서 고를 자격 증명 종류. 테스트(scripts/e2e-n8n.js)도 이 함수로 테스트 자격 증명을 붙인다. */
-export const credentialTypeOf = (node) => node.parameters.nodeCredentialType ?? CREDENTIAL_TYPES[node.type];
+export const credentialTypeOf = (node) =>
+  node.parameters.nodeCredentialType ?? node.parameters.genericAuthType ?? CREDENTIAL_TYPES[node.type];
 
 const readCode = (name) => readFile(path.join(ROOT, 'workflows/src', `${name}.js`), 'utf8');
 // 근거 검증 규칙(shared/draft-rules.js)을 노드 코드 앞에 붙인다. 초안 검증과 수정 검증이 같은 규칙을 쓴다.
@@ -89,6 +97,27 @@ const POSITIONS = {
   '내용 대조': [7200, -180],
   '쓰기 결과 표시': [7440, -240],
 };
+
+// 페이지 만들기와 그 뒤 노드. 여기서 실패하면 ClickUp에 페이지가 생겼을 수 있다(페이지 만들기는 재시도하지 않는다).
+const AFTER_WRITE = ['페이지 만들기', '페이지 다시 읽기', '내용 대조', '쓰기 결과 표시'];
+
+const FAILURE_POSITIONS = {
+  '실패': [0, 0],
+  '실행 읽기': [240, 0],
+  '알림 만들기': [480, 0],
+  '실패 알림': [720, 0],
+  '초안 메시지 확인': [960, 0],
+  '초안 메시지 고치기': [1200, -120],
+};
+
+const FAILURE_EDGES = [
+  ['실패', '실행 읽기'],
+  ['실행 읽기', '알림 만들기'],
+  ['알림 만들기', '실패 알림'],
+  // 알림을 먼저 보내서 초안 메시지 고치기가 실패해도 알림은 간다. 메시지 ID를 모르면(승인 버튼이 눌리기 전 실패) 고치지 않는다.
+  ['실패 알림', '초안 메시지 확인'],
+  ['초안 메시지 확인', '초안 메시지 고치기', 0, 0],
+];
 
 // [보내는 노드, 받는 노드, 받는 입력 번호, 보내는 출력 번호]. If 노드는 출력 0이 참, 1이 거짓이다.
 const EDGES = [
@@ -144,10 +173,10 @@ const EDGES = [
 // 승인 기다리기 기한(설계 5절 G: 3일). E2E는 짧게 바꿔 기한 초과를 확인한다.
 const APPROVAL_WAIT = { amount: 3, unit: 'days' };
 
-function place(nodes) {
+function place(nodes, positions = POSITIONS) {
   return nodes.map((node) => {
-    if (!POSITIONS[node.name]) throw new Error(`${node.name}의 화면 위치가 없습니다`);
-    return { ...node, position: POSITIONS[node.name] };
+    if (!positions[node.name]) throw new Error(`${node.name}의 화면 위치가 없습니다`);
+    return { ...node, position: positions[node.name] };
   });
 }
 
@@ -452,7 +481,68 @@ export async function buildWorkflow({
     active: false,
     nodes,
     connections: connect(EDGES),
-    settings: { executionOrder: 'v1', saveManualExecutions: true },
+    // 실패하면 실패 알림 워크플로가 돈다. 실패 알림 워크플로도 Publish해야 실행된다(n8n 2.42.6).
+    settings: { executionOrder: 'v1', saveManualExecutions: true, errorWorkflow: FAILURE_WORKFLOW_ID },
+    pinData: {},
+  };
+}
+
+/** 회의 녹취 워크플로가 실패하면 회의 채널에 알리는 워크플로(설계 5절 "실패 알림"). */
+export async function buildFailureWorkflow({ fallbackChannelId = MEETING_CHANNEL } = {}) {
+  const constants = [
+    `const FALLBACK_CHANNEL_ID = ${JSON.stringify(fallbackChannelId)};`,
+    `const NODE_TYPES = ${JSON.stringify(Object.fromEntries((await buildWorkflow()).nodes.map((n) => [n.name, n.type])))};`,
+    `const AFTER_WRITE = ${JSON.stringify(AFTER_WRITE)};`,
+  ].join('\n');
+  const nodes = place([
+    { parameters: {}, name: '실패', type: 'n8n-nodes-base.errorTrigger', typeVersion: 1 },
+    http(
+      '실행 읽기',
+      {
+        method: 'GET',
+        // customData는 includeData=true일 때만 온다(n8n 2.42.6 실험). 실행 데이터 전체가 이 워크플로 실행 기록에도 남는다(설계 6절).
+        url: `=${N8N_API_BASE}/executions/{{ $json.execution.id }}`,
+        authentication: 'genericCredentialType',
+        genericAuthType: 'httpHeaderAuth',
+        sendQuery: true,
+        queryParameters: { parameters: [{ name: 'includeData', value: 'true' }] },
+      },
+      // 읽기만 하므로 다시 보내도 안전하다. 끝내 실패하면 오류 항목을 넘겨 고정 채널로 알린다.
+      { retryOnFail: true, maxTries: 3, waitBetweenTries: 5000, onError: 'continueRegularOutput' },
+    ),
+    code('알림 만들기', `${constants}\n${await readCode('failure-notice')}`),
+    // 다시 보내면 알림이 두 번 갈 수 있어 재시도하지 않는다(기한 초과 알림과 같음).
+    http('실패 알림', {
+      method: 'POST',
+      url: `=${DISCORD_BASE}/channels/{{ $json.channelId }}/messages`,
+      ...credential('discordBotApi'),
+      sendBody: true,
+      specifyBody: 'json',
+      jsonBody: '={{ JSON.stringify($json.notice) }}',
+    }),
+    ifNode('초안 메시지 확인', "$('알림 만들기').first().json.draftEdit !== null", '0c5f4e2a-7d1b-4a39-8e6c-2f9b1d3a4c5e'),
+    http(
+      '초안 메시지 고치기',
+      {
+        method: 'PATCH',
+        url: `=${DISCORD_BASE}/channels/{{ $('알림 만들기').first().json.channelId }}/messages/{{ $('알림 만들기').first().json.draftMessageId }}`,
+        ...credential('discordBotApi'),
+        sendBody: true,
+        specifyBody: 'json',
+        jsonBody: "={{ JSON.stringify($('알림 만들기').first().json.draftEdit) }}",
+      },
+      // 같은 내용으로 고치는 것이라 다시 보내도 안전하다.
+      { retryOnFail: true, maxTries: 3, waitBetweenTries: 5000 },
+    ),
+  ], FAILURE_POSITIONS);
+
+  return {
+    id: FAILURE_WORKFLOW_ID,
+    name: '회의 녹취 실패 알림',
+    active: false,
+    nodes,
+    connections: connect(FAILURE_EDGES),
+    settings: { executionOrder: 'v1' },
     pinData: {},
   };
 }
@@ -464,17 +554,22 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const unknown = args.filter((arg) => arg !== '--check');
   if (unknown.length > 0) throw new Error(`모르는 인자: ${unknown.join(' ')}`);
 
-  const text = serialize(await buildWorkflow());
-  const relative = path.relative(ROOT, WORKFLOW_FILE);
-  if (args.includes('--check')) {
-    const current = await readFile(WORKFLOW_FILE, 'utf8').catch(() => '');
-    if (current !== text) {
-      console.error(`${relative}가 코드와 다릅니다. node scripts/build-workflow.js로 다시 만드세요.`);
-      process.exit(1);
+  let stale = false;
+  for (const [file, build] of [[WORKFLOW_FILE, buildWorkflow], [FAILURE_WORKFLOW_FILE, buildFailureWorkflow]]) {
+    const text = serialize(await build());
+    const relative = path.relative(ROOT, file);
+    if (args.includes('--check')) {
+      const current = await readFile(file, 'utf8').catch(() => '');
+      if (current !== text) {
+        console.error(`${relative}가 코드와 다릅니다. node scripts/build-workflow.js로 다시 만드세요.`);
+        stale = true;
+      } else {
+        console.log(`${relative}가 코드와 같습니다`);
+      }
+    } else {
+      await writeFile(file, text);
+      console.log(`${relative} 작성`);
     }
-    console.log(`${relative}가 코드와 같습니다`);
-  } else {
-    await writeFile(WORKFLOW_FILE, text);
-    console.log(`${relative} 작성`);
   }
+  if (stale) process.exit(1);
 }

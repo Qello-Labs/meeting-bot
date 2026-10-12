@@ -52,6 +52,11 @@ participants.forEach((p) => nameOf(p?.userId, p?.displayName));
 const prompt = names.size > 0 ? `참석자: ${[...new Set(names.values())].join(', ')}` : '';
 const speakers = segments.map((s) => nameOf(s.userId, s.displayName));
 
+// 실패 알림 워크플로가 n8n API로 이 실행을 읽어 알림을 보낼 채널을 찾는다(설계 5절 "실패 알림"). 형식을 확인한 값만 적는다.
+// 위에서 실패하면 이 노드에서 적은 값은 남지 않으므로(n8n 2.42.6 실험) 그때는 실패 알림이 고정 채널로 보낸다.
+$execution.customData.set('meetingId', manifest.meetingId);
+$execution.customData.set('textChannelId', manifest.textChannelId);
+
 return [{
   json: {
     meetingId: manifest.meetingId,
