@@ -5,6 +5,7 @@
 | 워크플로 | 파일 | 단계 |
 | --- | --- | --- |
 | 회의 녹취 | `meeting-transcribe.json` | 설계 문서 9절 5~9단계 |
+| 회의 녹취 실패 알림 | `meeting-transcribe-failure.json` | 설계 문서 9절 10단계(#23) |
 
 ## 원본은 코드다
 
@@ -113,8 +114,9 @@ n8n 화면에서 저장하면 기본값과 같은 파라미터가 JSON에서 빠
     ✅ 메시지가 없을 때만 `*   없음` 한 줄을 허용한다. `<…>` 자리표시자가 남으면 오류다.
   - 기한·다음 회의 일시가 `YYYY-MM-DD`가 아니면 지우고, 입력에 그대로 나오지 않은 명세 ID는 지운다. 지운 값은 `cleaned`에 남기고 알림에 개수를 넣는다.
   - 검증이 실패하면 실행은 성공으로 끝내고 `draftOk: false`로 표시한다. 회의 채널에는 오류 종류별 개수만 알리고 목록과 초안은 실행 기록에만 남긴다.
-- 응답 잘림(`incomplete`), 거절(`refusal`), 템플릿 조회 실패, API 오류는 실행을 실패시킨다. 이 단계에는 실패 알림 워크플로가 없어(10단계)
-  n8n 실행 기록에 오류로만 남고 회의 채널 알림은 가지 않는다.
+- 응답 잘림(`incomplete`), 거절(`refusal`), 템플릿 조회 실패, API 오류는 실행을 실패시킨다. 실패하면 설정(`errorWorkflow`)에 적힌
+  회의 녹취 실패 알림 워크플로가 회의 채널에 알린다(아래).
+- `녹음 정보 확인`은 회의 ID와 채널 ID를, `결정 읽기`는 초안 메시지 ID를 실행의 `customData`에 적는다. 실패 알림이 이 값으로 알릴 곳을 찾는다.
 - 승인 버튼(설계 5절 G):
   - 버튼·모달 ID는 `mb:<approve|reject|edit>:<실행 ID>:<판 번호>:<서명>`이다. 실행 ID와 서명은 `$execution.resumeUrl`에서 읽는다.
     n8n 2.42.6 Code 노드에는 `URL`이 없어 정규식으로 읽는다. 같은 실행에서 다시 기다려도 서명이 같아서 판 번호로 옛 버튼을 가른다.
@@ -125,6 +127,30 @@ n8n 화면에서 저장하면 기본값과 같은 파라미터가 JSON에서 빠
   표 구분선, 역슬래시 이스케이프 차이를 같은 것으로 본다(실제 ClickUp은 링크가 아닌 대괄호를 `\[…\]`로 저장한다).
 - 초안 모델을 고른 이유와 데이터 정책은 [결정 기록](../docs/decisions/2026-10-11-gh17-draft-model.md)에 있다.
 
+## 회의 녹취 실패 알림
+
+회의 녹취 실행이 실패하면 n8n이 이 워크플로를 실행한다(설계 5절 "실패 알림").
+
+```
+실패 → 실행 읽기 → 알림 만들기 → 실패 알림 → 초안 메시지 확인 ─(참)→ 초안 메시지 고치기
+```
+
+| 노드 | 하는 일 |
+| --- | --- |
+| 실패 (Error Trigger) | 실패한 실행의 ID, 마지막 노드, 오류를 받는다. 실패한 실행의 노드 출력은 받지 않는다(n8n 2.42.6) |
+| 실행 읽기 (HTTP Request) | n8n API `GET /api/v1/executions/<ID>?includeData=true`로 실패한 실행을 읽는다. `customData`는 `includeData=true`일 때만 온다. 3번까지 다시 시도하고, 끝내 실패하면 오류 항목을 넘긴다 |
+| 알림 만들기 (Code) | 회의 채널, 알림 문구, 초안 메시지 고치기 요청을 만든다. 채널을 모르면 실제 회의 채널(코드 상수)로 보낸다 |
+| 실패 알림 (HTTP Request) | 회의 채널에 알린다. 멘션을 끈다. 다시 보내면 두 번 가므로 재시도하지 않는다 |
+| 초안 메시지 확인 (If), 초안 메시지 고치기 (HTTP Request) | 승인 버튼이 눌린 뒤 실패했으면 초안 메시지를 `처리 중 실패했습니다(n8n 실행 <ID>)`로 바꾸고 버튼을 지운다 |
+
+- 알림 예: `회의 20261014-1400 회의록 처리가 '초안 작성' 단계에서 실패했습니다. 오류: 외부 서비스 응답 오류(HTTP 429). n8n 실행 123에서 확인해 주세요.`
+- 알림에는 코드가 정한 값만 넣는다. 노드 이름은 회의 녹취 워크플로에 있는 이름만, 오류 종류는 HTTP 상태 코드·시스템 오류 코드·`검사 중단`(Code 노드)·`기타 오류`
+  중 하나다. 오류 원문, 실행 주소, 요청 본문은 넣지 않는다. 실패(Error Trigger)가 주는 오류에는 녹취·초안이 담긴 요청 본문, 쿼리를 포함한 주소,
+  사람이 쓴 글이 섞여 있기 때문이다. 자세한 원인은 실행 ID로 n8n 화면에서 본다.
+- `페이지 만들기`나 그 뒤에서 실패했으면 ClickUp `회의록`에 페이지가 생겼는지 확인하라고 덧붙인다.
+- 실행 읽기 결과(녹취·초안 포함)가 이 워크플로의 실행 기록에도 남는다. 같은 n8n DB이고 7일 뒤 함께 지워진다.
+- 근거 검증 실패는 실행이 성공으로 끝나므로 이 워크플로가 돌지 않는다. 회의 채널 알림에 오류 종류별 개수가 간다.
+
 ## 가져오기
 
 가져오기와 n8n 시작을 동시에 하지 않는다. 처음 만든 DB에서 둘이 함께 마이그레이션을 돌리면 n8n이 `malformed JSON` 오류로 멈춘다
@@ -133,11 +159,18 @@ n8n 화면에서 저장하면 기본값과 같은 파라미터가 JSON에서 빠
 ```bash
 docker compose stop n8n
 docker compose run --rm --no-deps n8n import:workflow --input=/workflows/meeting-transcribe.json
+docker compose run --rm --no-deps n8n import:workflow --input=/workflows/meeting-transcribe-failure.json
 docker compose start n8n
 ```
 
 같은 ID의 워크플로가 있으면 덮어쓰고 꺼진 상태가 된다. 자격 증명 연결도 비워진다. n8n 화면에서 노드마다 자격 증명을 고른 뒤
-Publish한다.
+두 워크플로를 모두 Publish한다. 실패 알림 워크플로도 Publish해야 실행된다(n8n 2.42.6).
+
+실패 알림의 실행 읽기에 쓸 n8n API 키를 n8n마다 만든다.
+
+1. Settings → n8n API에서 API 키를 만든다. 범위(Scopes)를 고를 수 있으면 `execution:read`만 고른다.
+2. Credentials에서 Header Auth 자격 증명을 만든다. Name은 `X-N8N-API-KEY`, Value는 1의 키다.
+3. 실행 읽기 노드에서 이 자격 증명을 고른다. 주소는 컨테이너 안의 `http://127.0.0.1:5678`이라 바꾸지 않는다.
 
 | 노드 | 자격 증명 |
 | --- | --- |
@@ -148,6 +181,8 @@ Publish한다.
 | 회의 채널 알림 | Discord Bot |
 | 초안 보내기(첨부), 초안 보내기, 수정 반영, 결과 표시, 쓰기 결과 표시, 기한 초과 알림 | Discord Bot |
 | 페이지 목록 읽기, 페이지 만들기, 페이지 다시 읽기 | ClickUp (템플릿 읽기와 같은 것. 회의록 문서 쓰기 권한 필요) |
+| 실행 읽기 (실패 알림) | Header Auth (n8n API 키, `execution:read`) |
+| 실패 알림, 초안 메시지 고치기 (실패 알림) | Discord Bot |
 
 Discord 봇은 회의 채널의 메시지 기록 보기 권한과 Message Content Intent가 있어야 결정 메시지를 읽는다.
 
@@ -160,6 +195,7 @@ npm run test:workflow   # Code 노드를 n8n 없이 순서대로 실행, 차이 
 npm run e2e:n8n         # 실제 n8n 2.42.6 + 가짜 OpenAI·Discord·ClickUp 서버. Docker와 openssl 필요, 비용 없음
 ```
 
+E2E는 두 워크플로를 모두 가져온다. 실패 알림용 n8n API 키는 테스트 n8n을 띄운 뒤 소유자 계정을 만들어 발급한다.
 E2E는 별도 compose 프로젝트(`meeting-bot-gh13-e2e`)와 임시 폴더를 쓰고 끝나면 지운다. Docker volume은 만들지 않는다.
 Discord 노드는 주소가 `https://discord.com/api/v10`로 고정이라, 테스트 네트워크 안에서만 `discord.com`을 가짜 서버로 돌리고
 실행할 때 만든 테스트 CA를 n8n이 믿게 한다(`NODE_EXTRA_CA_CERTS`). 실패 원인을 보려면 `node scripts/e2e-n8n.js --keep`.

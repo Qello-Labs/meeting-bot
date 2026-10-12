@@ -4,4 +4,6 @@ export const TEST_CREDENTIALS = {
   discordBotApi: { id: 'e2eDiscordBot001', name: 'E2E Discord', data: { botToken: 'dummy-e2e-discord' } },
   openAiApi: { id: 'e2eOpenAi0000001', name: 'E2E OpenAI', data: { apiKey: 'dummy-e2e-openai' } },
   clickUpApi: { id: 'e2eClickUp000001', name: 'E2E ClickUp', data: { accessToken: 'dummy-e2e-clickup' } },
+  // 실패 알림이 n8n API로 실패한 실행을 읽을 때 쓴다. 키는 테스트 n8n이 뜬 뒤 만들어 value에 넣는다(scripts/e2e-n8n.js).
+  httpHeaderAuth: { id: 'e2eN8nApiKey0001', name: 'E2E n8n API', data: { name: 'X-N8N-API-KEY', value: null } },
 };

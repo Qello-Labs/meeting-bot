@@ -13,6 +13,8 @@ const current = ($('수정 반영 만들기').isExecuted ? $('수정 반영 만�
 const body = $input.first().json.body;
 
 const base = { textChannelId: sent.channel_id, messageId: sent.id, rev: current.rev, draft: current.draft };
+// 승인 뒤에 실패하면 실패 알림 워크플로가 이 메시지를 실패로 고친다(설계 5절 "실패 알림").
+$execution.customData.set('draftMessageId', sent.id);
 const settle = (content) => ({ content: `회의 ${meeting.meetingId} 회의록 초안: ${content}`, components: [], allowed_mentions: { parse: [] } });
 
 if (body === undefined) {
