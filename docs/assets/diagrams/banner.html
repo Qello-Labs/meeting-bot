@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>meeting-bot: Discord 회의에서 ClickUp 회의록까지</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif:ital@0;1&family=Noto+Sans+KR:wght@400;500;600&family=Noto+Serif+KR:wght@400&family=Noto+Sans+TC:wght@400;500;600&family=Noto+Serif+TC:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    :root {
+      --color-paper: #f4f8fd;
+      --color-ink: #1b2a41;
+      --color-muted: #46607f;
+      --color-soft: #6f86a3;
+      --color-accent: #2563eb;
+      --color-rule: rgba(27,42,65,0.12);
+      --font-sans: 'Geist', 'Noto Sans KR', system-ui, sans-serif;
+      --font-serif: 'Instrument Serif', 'Noto Serif', 'Noto Serif KR', serif;
+      --font-mono: 'Geist Mono', ui-monospace, monospace;
+      --motion-fast: 160ms;
+      --motion-step: 480ms;
+      --motion-hold: 720ms;
+      --motion-total: 5040ms; /* 7 steps x hold */
+      --motion-ease: cubic-bezier(.2,.8,.2,1);
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: start center;
+      padding: 0;
+      color: var(--color-ink);
+      background: var(--color-paper);
+      font-family: var(--font-sans);
+    }
+    [data-motion-root] { width: min(100%, 960px); }
+    .eyebrow {
+      margin: 0 0 8px;
+      color: var(--color-muted);
+      font: 500 12px/1.4 var(--font-mono);
+      letter-spacing: .18em;
+      text-transform: uppercase;
+    }
+    h1 { margin: 0 0 24px; font: 400 32px/1.15 var(--font-serif); }
+    svg { display: block; width: 100%; min-width: 960px; }
+    .banner-head { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+    /* The SVG holds its readable width (min-width == the viewBox width, so the
+       type ramp is never silently scaled down). This wrapper lets a narrow
+       screen scroll the diagram instead of the whole page. body is a centred
+       grid, so the root needs max-width/min-width to stop the grid item from
+       sizing itself to the SVG's max-content width. */
+    [data-motion-root] { max-width: 100%; min-width: 0; }
+    .diagram-container { width: 100%; overflow-x: auto; }
+
+    /* Static source is complete. Only an initialized enhancement hides items. */
+    .motion-ready [data-motion-item] {
+      opacity: .12;
+      transform: translateY(8px);
+      transform-box: fill-box;
+      transform-origin: center;
+      transition: opacity var(--motion-step) var(--motion-ease),
+                  transform var(--motion-step) var(--motion-ease);
+    }
+    .motion-ready [data-motion-item].is-visible,
+    .motion-ready[data-frame="end"] [data-motion-item],
+    .motion-ready[data-frame="static"] [data-motion-item] {
+      opacity: 1;
+      transform: none;
+    }
+    .draw-path {
+      fill: none;
+      stroke: var(--color-accent);
+      stroke-width: 3;
+      stroke-dasharray: 1;
+      stroke-dashoffset: 1;
+      pointer-events: none;
+    }
+    .motion-ready .draw-path.is-visible {
+      animation: draw-path var(--motion-step) linear forwards;
+    }
+    .flow-token { opacity: 0; pointer-events: none; }
+    .motion-ready.is-playing .flow-token.is-visible {
+      opacity: 1;
+      animation: token-flow 3.2s linear 1 forwards;
+    }
+    .motion-ready[data-motion-mode="loop"].is-playing .flow-token.is-visible {
+      animation-iteration-count: infinite;
+    }
+    @keyframes draw-path { to { stroke-dashoffset: 0; } }
+    @keyframes token-flow {
+      0% { transform: translateX(0); }
+      100% { transform: translateX(240px); }
+    }
+
+    [data-motion-controls] {
+      display: none;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid var(--color-rule);
+    }
+    .motion-ready [data-motion-controls] { display: flex; }
+    [data-motion-controls][hidden] { display: none !important; }
+    [data-motion-controls] button {
+      min-width: 44px;
+      min-height: 44px;
+      padding: 8px 12px;
+      border: 1px solid var(--color-muted);
+      border-radius: 4px;
+      color: var(--color-ink);
+      background: var(--color-paper);
+      font: 600 12px/1 var(--font-sans);
+      cursor: pointer;
+    }
+    [data-motion-controls] button:hover { border-color: var(--color-accent); }
+    [data-motion-controls] button:focus-visible {
+      outline: 3px solid var(--color-accent);
+      outline-offset: 2px;
+    }
+    [data-motion-controls] button:disabled { cursor: not-allowed; opacity: .45; }
+    [data-motion-status-visible] {
+      margin-left: auto;
+      color: var(--color-muted);
+      font: 500 12px/1.4 var(--font-mono);
+    }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0,0,0,0);
+      white-space: nowrap;
+      border: 0;
+    }
+    noscript p {
+      margin: 12px 0 0;
+      color: var(--color-muted);
+      font: 500 12px/1.4 var(--font-mono);
+    }
+
+    html[data-motion="static"] [data-motion-controls],
+    html[data-motion="static"] [data-motion-decorative] { display: none !important; }
+    html[data-motion="static"] [data-motion-item] {
+      opacity: 1 !important;
+      transform: none !important;
+      animation: none !important;
+      transition: none !important;
+    }
+    html[data-motion="step"] [data-motion-controls],
+    html[data-motion="step"] [data-motion-decorative] { display: none !important; }
+    html[data-motion="step"] [data-motion-item] {
+      animation: none !important;
+      transition: none !important;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: .001ms !important;
+        animation-iteration-count: 1 !important;
+        scroll-behavior: auto !important;
+        transition-duration: .001ms !important;
+      }
+      [data-motion-item] { opacity: 1 !important; transform: none !important; }
+      [data-motion-decorative] { display: none !important; }
+      [data-motion-controls] { display: none !important; }
+    }
+    @media print {
+      /* Paper has no scrollbar, so the local scroller would clip instead of
+         scroll. Let the diagram scale down to the sheet: smaller but whole
+         beats sharp but cut off. */
+      .diagram-container { overflow-x: visible; }
+      svg { min-width: 0; }
+      [data-motion-controls], [data-motion-decorative] { display: none !important; }
+      [data-motion-item] {
+        opacity: 1 !important;
+        transform: none !important;
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- meeting-bot README banner. Frames for docs/assets/banner.gif are captured with ?motion=step&step=N. -->
+  <main data-motion-root data-motion-mode="step" data-step-count="7" data-step-current="7" data-frame="static" data-static-frame="complete">
+    <p class="eyebrow banner-head">Banner · meeting-bot</p>
+    <h1 class="banner-head">meeting-bot: Discord 회의에서 ClickUp 회의록까지</h1>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 960 344" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="banner-title banner-desc">
+        <title id="banner-title">meeting-bot: Discord 회의에서 ClickUp 회의록까지</title>
+        <desc id="banner-desc">녹음, 녹취, 결정 메시지 수집, GPT 초안, 코드 근거 검증, Discord 승인, ClickUp 기록의 일곱 단계가 왼쪽부터 순서대로 이어지고 근거 검증 단계가 중심이다.</desc>
+<defs>
+<marker id="banner-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#46607f"/></marker>
+<marker id="banner-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2563eb"/></marker>
+</defs>
+<rect width="960" height="344" fill="#f4f8fd"/>
+<text x="40" y="52" fill="#46607f" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.18em">QELLO · DISCORD → N8N → CLICKUP</text>
+<text x="40" y="100" fill="#1b2a41" font-size="40" font-family="'Instrument Serif', 'Noto Serif', 'Noto Serif KR', serif" letter-spacing="-0.01em">meeting-bot</text>
+<text x="252" y="98" fill="#46607f" font-size="16" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">Discord 회의를 근거가 달린 회의록으로</text>
+<line x1="40" y1="128" x2="920" y2="128" stroke="rgba(27,42,65,0.1)" stroke-width="0.8"/>
+<g data-motion-item data-step="1" aria-label="1단계 녹음: speaker files">
+<path d="M 51.51 200 A 8.49 4.24 0 0 1 54 197 L 90 179 A 8.49 4.24 0 0 1 102 179 L 138 197 A 8.49 4.24 0 0 1 140.49 200 L 140.49 224 A 8.49 4.24 0 0 1 138 227 L 102 245 A 8.49 4.24 0 0 1 90 245 L 54 227 A 8.49 4.24 0 0 1 51.51 224 Z" fill="#ffffff"/>
+<path d="M 102 179 L 138 197 A 8.49 4.24 0 0 1 138 203 L 102 221 A 8.49 4.24 0 0 1 90 221 L 54 203 A 8.49 4.24 0 0 1 54 197 L 90 179 A 8.49 4.24 0 0 1 102 179 Z" fill="rgba(27,42,65,0.03)"/>
+<path d="M 51.51 200 A 8.49 4.24 0 0 0 54 203 L 90 221 A 8.49 4.24 0 0 0 96 222.24 L 96 246.24 A 8.49 4.24 0 0 1 90 245 L 54 227 A 8.49 4.24 0 0 1 51.51 224 Z" fill="rgba(27,42,65,0.08)"/>
+<path d="M 96 222.24 A 8.49 4.24 0 0 0 102 221 L 138 203 A 8.49 4.24 0 0 0 140.49 200 L 140.49 224 A 8.49 4.24 0 0 1 138 227 L 102 245 A 8.49 4.24 0 0 1 96 246.24 Z" fill="rgba(27,42,65,0.16)"/>
+<path d="M 51.51 200 A 8.49 4.24 0 0 0 54 203 L 90 221 A 8.49 4.24 0 0 0 96 222.24 A 8.49 4.24 0 0 0 102 221 L 138 203 A 8.49 4.24 0 0 0 140.49 200" fill="none" stroke="rgba(27,42,65,0.55)" stroke-width="0.8"/>
+<path d="M 51.51 200 A 8.49 4.24 0 0 1 54 197 L 90 179 A 8.49 4.24 0 0 1 102 179 L 138 197 A 8.49 4.24 0 0 1 140.49 200 L 140.49 224 A 8.49 4.24 0 0 1 138 227 L 102 245 A 8.49 4.24 0 0 1 90 245 L 54 227 A 8.49 4.24 0 0 1 51.51 224 Z" fill="none" stroke="#1b2a41" stroke-width="1.2" stroke-linejoin="round"/>
+<path d="M 88.93 185 A 7.07 3.54 0 0 1 91 182.5 L 91 182.5 A 7.07 3.54 0 0 1 101 182.5 L 101 182.5 A 7.07 3.54 0 0 1 103.07 185 L 103.07 191 A 7.07 3.54 0 0 1 101 193.5 L 101 193.5 A 7.07 3.54 0 0 1 91 193.5 L 91 193.5 A 7.07 3.54 0 0 1 88.93 191 Z" fill="#ffffff"/>
+<path d="M 101 182.5 L 101 182.5 A 7.07 3.54 0 0 1 101 187.5 L 101 187.5 A 7.07 3.54 0 0 1 91 187.5 L 91 187.5 A 7.07 3.54 0 0 1 91 182.5 L 91 182.5 A 7.07 3.54 0 0 1 101 182.5 Z" fill="rgba(27,42,65,0.03)"/>
+<path d="M 88.93 185 A 7.07 3.54 0 0 0 91 187.5 L 91 187.5 A 7.07 3.54 0 0 0 96 188.54 L 96 194.54 A 7.07 3.54 0 0 1 91 193.5 L 91 193.5 A 7.07 3.54 0 0 1 88.93 191 Z" fill="rgba(27,42,65,0.08)"/>
+<path d="M 96 188.54 A 7.07 3.54 0 0 0 101 187.5 L 101 187.5 A 7.07 3.54 0 0 0 103.07 185 L 103.07 191 A 7.07 3.54 0 0 1 101 193.5 L 101 193.5 A 7.07 3.54 0 0 1 96 194.54 Z" fill="rgba(27,42,65,0.16)"/>
+<path d="M 88.93 185 A 7.07 3.54 0 0 0 91 187.5 L 91 187.5 A 7.07 3.54 0 0 0 96 188.54 A 7.07 3.54 0 0 0 101 187.5 L 101 187.5 A 7.07 3.54 0 0 0 103.07 185" fill="none" stroke="rgba(27,42,65,0.55)" stroke-width="0.8"/>
+<path d="M 88.93 185 A 7.07 3.54 0 0 1 91 182.5 L 91 182.5 A 7.07 3.54 0 0 1 101 182.5 L 101 182.5 A 7.07 3.54 0 0 1 103.07 185 L 103.07 191 A 7.07 3.54 0 0 1 101 193.5 L 101 193.5 A 7.07 3.54 0 0 1 91 193.5 L 91 193.5 A 7.07 3.54 0 0 1 88.93 191 Z" fill="none" stroke="#1b2a41" stroke-width="1.2" stroke-linejoin="round"/>
+<path d="M 96.93 197 A 7.07 3.54 0 0 1 99 194.5 L 99 194.5 A 7.07 3.54 0 0 1 109 194.5 L 109 194.5 A 7.07 3.54 0 0 1 111.07 197 L 111.07 203 A 7.07 3.54 0 0 1 109 205.5 L 109 205.5 A 7.07 3.54 0 0 1 99 205.5 L 99 205.5 A 7.07 3.54 0 0 1 96.93 203 Z" fill="#ffffff"/>
+<path d="M 109 194.5 L 109 194.5 A 7.07 3.54 0 0 1 109 199.5 L 109 199.5 A 7.07 3.54 0 0 1 99 199.5 L 99 199.5 A 7.07 3.54 0 0 1 99 194.5 L 99 194.5 A 7.07 3.54 0 0 1 109 194.5 Z" fill="rgba(27,42,65,0.03)"/>
+<path d="M 96.93 197 A 7.07 3.54 0 0 0 99 199.5 L 99 199.5 A 7.07 3.54 0 0 0 104 200.54 L 104 206.54 A 7.07 3.54 0 0 1 99 205.5 L 99 205.5 A 7.07 3.54 0 0 1 96.93 203 Z" fill="rgba(27,42,65,0.08)"/>
+<path d="M 104 200.54 A 7.07 3.54 0 0 0 109 199.5 L 109 199.5 A 7.07 3.54 0 0 0 111.07 197 L 111.07 203 A 7.07 3.54 0 0 1 109 205.5 L 109 205.5 A 7.07 3.54 0 0 1 104 206.54 Z" fill="rgba(27,42,65,0.16)"/>
+<path d="M 96.93 197 A 7.07 3.54 0 0 0 99 199.5 L 99 199.5 A 7.07 3.54 0 0 0 104 200.54 A 7.07 3.54 0 0 0 109 199.5 L 109 199.5 A 7.07 3.54 0 0 0 111.07 197" fill="none" stroke="rgba(27,42,65,0.55)" stroke-width="0.8"/>
+<path d="M 96.93 197 A 7.07 3.54 0 0 1 99 194.5 L 99 194.5 A 7.07 3.54 0 0 1 109 194.5 L 109 194.5 A 7.07 3.54 0 0 1 111.07 197 L 111.07 203 A 7.07 3.54 0 0 1 109 205.5 L 109 205.5 A 7.07 3.54 0 0 1 99 205.5 L 99 205.5 A 7.07 3.54 0 0 1 96.93 203 Z" fill="none" stroke="#1b2a41" stroke-width="1.2" stroke-linejoin="round"/>
+<path d="M 70.93 196 A 7.07 3.54 0 0 1 73 193.5 L 73 193.5 A 7.07 3.54 0 0 1 83 193.5 L 83 193.5 A 7.07 3.54 0 0 1 85.07 196 L 85.07 202 A 7.07 3.54 0 0 1 83 204.5 L 83 204.5 A 7.07 3.54 0 0 1 73 204.5 L 73 204.5 A 7.07 3.54 0 0 1 70.93 202 Z" fill="#ffffff"/>
+<path d="M 83 193.5 L 83 193.5 A 7.07 3.54 0 0 1 83 198.5 L 83 198.5 A 7.07 3.54 0 0 1 73 198.5 L 73 198.5 A 7.07 3.54 0 0 1 73 193.5 L 73 193.5 A 7.07 3.54 0 0 1 83 193.5 Z" fill="rgba(27,42,65,0.03)"/>
+<path d="M 70.93 196 A 7.07 3.54 0 0 0 73 198.5 L 73 198.5 A 7.07 3.54 0 0 0 78 199.54 L 78 205.54 A 7.07 3.54 0 0 1 73 204.5 L 73 204.5 A 7.07 3.54 0 0 1 70.93 202 Z" fill="rgba(27,42,65,0.08)"/>
+<path d="M 78 199.54 A 7.07 3.54 0 0 0 83 198.5 L 83 198.5 A 7.07 3.54 0 0 0 85.07 196 L 85.07 202 A 7.07 3.54 0 0 1 83 204.5 L 83 204.5 A 7.07 3.54 0 0 1 78 205.54 Z" fill="rgba(27,42,65,0.16)"/>
+<path d="M 70.93 196 A 7.07 3.54 0 0 0 73 198.5 L 73 198.5 A 7.07 3.54 0 0 0 78 199.54 A 7.07 3.54 0 0 0 83 198.5 L 83 198.5 A 7.07 3.54 0 0 0 85.07 196" fill="none" stroke="rgba(27,42,65,0.55)" stroke-width="0.8"/>
+<path d="M 70.93 196 A 7.07 3.54 0 0 1 73 193.5 L 73 193.5 A 7.07 3.54 0 0 1 83 193.5 L 83 193.5 A 7.07 3.54 0 0 1 85.07 196 L 85.07 202 A 7.07 3.54 0 0 1 83 204.5 L 83 204.5 A 7.07 3.54 0 0 1 73 204.5 L 73 204.5 A 7.07 3.54 0 0 1 70.93 202 Z" fill="none" stroke="#1b2a41" stroke-width="1.2" stroke-linejoin="round"/>
+<text x="96" y="282" fill="#1b2a41" font-size="16" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">녹음</text>
+<text x="96" y="302" fill="#46607f" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">speaker files</text>
+</g>
+<g data-motion-item data-step="2" aria-label="2단계 녹취: timed transcript">
+<path d="M 146.49,212.0 H 173.51" fill="none" stroke="#46607f" stroke-width="1.2" marker-end="url(#banner-arrow)"/>
+<path d="M 179.51 200 A 8.49 4.24 0 0 1 182 197 L 218 179 A 8.49 4.24 0 0 1 230 179 L 266 197 A 8.49 4.24 0 0 1 268.49 200 L 268.49 224 A 8.49 4.24 0 0 1 266 227 L 230 245 A 8.49 4.24 0 0 1 218 245 L 182 227 A 8.49 4.24 0 0 1 179.51 224 Z" fill="#ffffff"/>
+<path d="M 230 179 L 266 197 A 8.49 4.24 0 0 1 266 203 L 230 221 A 8.49 4.24 0 0 1 218 221 L 182 203 A 8.49 4.24 0 0 1 182 197 L 218 179 A 8.49 4.24 0 0 1 230 179 Z" fill="rgba(27,42,65,0.03)"/>
+<path d="M 179.51 200 A 8.49 4.24 0 0 0 182 203 L 218 221 A 8.49 4.24 0 0 0 224 222.24 L 224 246.24 A 8.49 4.24 0 0 1 218 245 L 182 227 A 8.49 4.24 0 0 1 179.51 224 Z" fill="rgba(27,42,65,0.08)"/>
+<path d="M 224 222.24 A 8.49 4.24 0 0 0 230 221 L 266 203 A 8.49 4.24 0 0 0 268.49 200 L 268.49 224 A 8.49 4.24 0 0 1 266 227 L 230 245 A 8.49 4.24 0 0 1 224 246.24 Z" fill="rgba(27,42,65,0.16)"/>
+<path d="M 179.51 200 A 8.49 4.24 0 0 0 182 203 L 218 221 A 8.49 4.24 0 0 0 224 222.24 A 8.49 4.24 0 0 0 230 221 L 266 203 A 8.49 4.24 0 0 0 268.49 200" fill="none" stroke="rgba(27,42,65,0.55)" stroke-width="0.8"/>
+<path d="M 179.51 200 A 8.49 4.24 0 0 1 182 197 L 218 179 A 8.49 4.24 0 0 1 230 179 L 266 197 A 8.49 4.24 0 0 1 268.49 200 L 268.49 224 A 8.49 4.24 0 0 1 266 227 L 230 245 A 8.49 4.24 0 0 1 218 245 L 182 227 A 8.49 4.24 0 0 1 179.51 224 Z" fill="none" stroke="#1b2a41" stroke-width="1.2" stroke-linejoin="round"/>
+<path d="M 221 186.5 L 251 201.5 A 1.41 0.71 0 0 1 251 202.5 L 249 203.5 A 1.41 0.71 0 0 1 247 203.5 L 217 188.5 A 1.41 0.71 0 0 1 217 187.5 L 219 186.5 A 1.41 0.71 0 0 1 221 186.5 Z" fill="none" stroke="rgba(27,42,65,0.45)" stroke-width="0.8"/>
+<path d="M 211 191.5 L 241 206.5 A 1.41 0.71 0 0 1 241 207.5 L 239 208.5 A 1.41 0.71 0 0 1 237 208.5 L 207 193.5 A 1.41 0.71 0 0 1 207 192.5 L 209 191.5 A 1.41 0.71 0 0 1 211 191.5 Z" fill="none" stroke="rgba(27,42,65,0.45)" stroke-width="0.8"/>
+<path d="M 201 196.5 L 231 211.5 A 1.41 0.71 0 0 1 231 212.5 L 229 213.5 A 1.41 0.71 0 0 1 227 213.5 L 197 198.5 A 1.41 0.71 0 0 1 197 197.5 L 199 196.5 A 1.41 0.71 0 0 1 201 196.5 Z" fill="none" stroke="rgba(27,42,65,0.45)" stroke-width="0.8"/>
+<text x="224" y="282" fill="#1b2a41" font-size="16" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">녹취</text>
+<text x="224" y="302" fill="#46607f" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">timed transcript</text>
+</g>
+<g data-motion-item data-step="3" aria-label="3단계 결정: reacted messages">
+<path d="M 274.49,212.0 H 301.51" fill="none" stroke="#46607f" stroke-width="1.2" marker-end="url(#banner-arrow)"/>
+<path d="M 307.51 200 A 8.49 4.24 0 0 1 310 197 L 346 179 A 8.49 4.24 0 0 1 358 179 L 394 197 A 8.49 4.24 0 0 1 396.49 200 L 396.49 224 A 8.49 4.24 0 0 1 394 227 L 358 245 A 8.49 4.24 0 0 1 346 245 L 310 227 A 8.49 4.24 0 0 1 307.51 224 Z" fill="#ffffff"/>
+<path d="M 358 179 L 394 197 A 8.49 4.24 0 0 1 394 203 L 358 221 A 8.49 4.24 0 0 1 346 221 L 310 203 A 8.49 4.24 0 0 1 310 197 L 346 179 A 8.49 4.24 0 0 1 358 179 Z" fill="rgba(27,42,65,0.03)"/>
+<path d="M 307.51 200 A 8.49 4.24 0 0 0 310 203 L 346 221 A 8.49 4.24 0 0 0 352 222.24 L 352 246.24 A 8.49 4.24 0 0 1 346 245 L 310 227 A 8.49 4.24 0 0 1 307.51 224 Z" fill="rgba(27,42,65,0.08)"/>
+<path d="M 352 222.24 A 8.49 4.24 0 0 0 358 221 L 394 203 A 8.49 4.24 0 0 0 396.49 200 L 396.49 224 A 8.49 4.24 0 0 1 394 227 L 358 245 A 8.49 4.24 0 0 1 352 246.24 Z" fill="rgba(27,42,65,0.16)"/>
+<path d="M 307.51 200 A 8.49 4.24 0 0 0 310 203 L 346 221 A 8.49 4.24 0 0 0 352 222.24 A 8.49 4.24 0 0 0 358 221 L 394 203 A 8.49 4.24 0 0 0 396.49 200" fill="none" stroke="rgba(27,42,65,0.55)" stroke-width="0.8"/>
+<path d="M 307.51 200 A 8.49 4.24 0 0 1 310 197 L 346 179 A 8.49 4.24 0 0 1 358 179 L 394 197 A 8.49 4.24 0 0 1 396.49 200 L 396.49 224 A 8.49 4.24 0 0 1 394 227 L 358 245 A 8.49 4.24 0 0 1 346 245 L 310 227 A 8.49 4.24 0 0 1 307.51 224 Z" fill="none" stroke="#1b2a41" stroke-width="1.2" stroke-linejoin="round"/>
+<path d="M 355 185.5 L 363 189.5 A 4.24 2.12 0 0 1 363 192.5 L 355 196.5 A 4.24 2.12 0 0 1 349 196.5 L 341 192.5 A 4.24 2.12 0 0 1 341 189.5 L 349 185.5 A 4.24 2.12 0 0 1 355 185.5 Z" fill="rgba(37,99,235,0.1)" stroke="rgba(27,42,65,0.45)" stroke-width="0.8"/>
+<path d="M 333 194.5 L 363 209.5 A 1.41 0.71 0 0 1 363 210.5 L 359 212.5 A 1.41 0.71 0 0 1 357 212.5 L 327 197.5 A 1.41 0.71 0 0 1 327 196.5 L 331 194.5 A 1.41 0.71 0 0 1 333 194.5 Z" fill="none" stroke="rgba(27,42,65,0.45)" stroke-width="0.8"/>
+<text x="352" y="282" fill="#1b2a41" font-size="16" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">결정</text>
+<text x="352" y="302" fill="#46607f" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">reacted messages</text>
+</g>
+<g data-motion-item data-step="4" aria-label="4단계 초안: GPT draft">
+<path d="M 402.49,212.0 H 429.51" fill="none" stroke="#46607f" stroke-width="1.2" marker-end="url(#banner-arrow)"/>
+<path d="M 435.51 200 A 8.49 4.24 0 0 1 438 197 L 474 179 A 8.49 4.24 0 0 1 486 179 L 522 197 A 8.49 4.24 0 0 1 524.49 200 L 524.49 224 A 8.49 4.24 0 0 1 522 227 L 486 245 A 8.49 4.24 0 0 1 474 245 L 438 227 A 8.49 4.24 0 0 1 435.51 224 Z" fill="#ffffff"/>
+<path d="M 486 179 L 522 197 A 8.49 4.24 0 0 1 522 203 L 486 221 A 8.49 4.24 0 0 1 474 221 L 438 203 A 8.49 4.24 0 0 1 438 197 L 474 179 A 8.49 4.24 0 0 1 486 179 Z" fill="rgba(27,42,65,0.03)"/>
+<path d="M 435.51 200 A 8.49 4.24 0 0 0 438 203 L 474 221 A 8.49 4.24 0 0 0 480 222.24 L 480 246.24 A 8.49 4.24 0 0 1 474 245 L 438 227 A 8.49 4.24 0 0 1 435.51 224 Z" fill="rgba(27,42,65,0.08)"/>
+<path d="M 480 222.24 A 8.49 4.24 0 0 0 486 221 L 522 203 A 8.49 4.24 0 0 0 524.49 200 L 524.49 224 A 8.49 4.24 0 0 1 522 227 L 486 245 A 8.49 4.24 0 0 1 480 246.24 Z" fill="rgba(27,42,65,0.16)"/>
+<path d="M 435.51 200 A 8.49 4.24 0 0 0 438 203 L 474 221 A 8.49 4.24 0 0 0 480 222.24 A 8.49 4.24 0 0 0 486 221 L 522 203 A 8.49 4.24 0 0 0 524.49 200" fill="none" stroke="rgba(27,42,65,0.55)" stroke-width="0.8"/>
+<path d="M 435.51 200 A 8.49 4.24 0 0 1 438 197 L 474 179 A 8.49 4.24 0 0 1 486 179 L 522 197 A 8.49 4.24 0 0 1 524.49 200 L 524.49 224 A 8.49 4.24 0 0 1 522 227 L 486 245 A 8.49 4.24 0 0 1 474 245 L 438 227 A 8.49 4.24 0 0 1 435.51 224 Z" fill="none" stroke="#1b2a41" stroke-width="1.2" stroke-linejoin="round"/>
+<path d="M 483 185.5 L 509 198.5 A 4.24 2.12 0 0 1 509 201.5 L 483 214.5 A 4.24 2.12 0 0 1 477 214.5 L 451 201.5 A 4.24 2.12 0 0 1 451 198.5 L 477 185.5 A 4.24 2.12 0 0 1 483 185.5 Z" fill="none" stroke="rgba(27,42,65,0.45)" stroke-width="0.8"/>
+<path d="M 481 190.5 L 499 199.5 A 1.41 0.71 0 0 1 499 200.5 L 498 201 A 1.41 0.71 0 0 1 496 201 L 478 192 A 1.41 0.71 0 0 1 478 191 L 479 190.5 A 1.41 0.71 0 0 1 481 190.5 Z" fill="none" stroke="rgba(27,42,65,0.45)" stroke-width="0.8"/>
+<path d="M 473 194.5 L 491 203.5 A 1.41 0.71 0 0 1 491 204.5 L 490 205 A 1.41 0.71 0 0 1 488 205 L 470 196 A 1.41 0.71 0 0 1 470 195 L 471 194.5 A 1.41 0.71 0 0 1 473 194.5 Z" fill="none" stroke="rgba(27,42,65,0.45)" stroke-width="0.8"/>
+<path d="M 465 198.5 L 483 207.5 A 1.41 0.71 0 0 1 483 208.5 L 482 209 A 1.41 0.71 0 0 1 480 209 L 462 200 A 1.41 0.71 0 0 1 462 199 L 463 198.5 A 1.41 0.71 0 0 1 465 198.5 Z" fill="none" stroke="rgba(27,42,65,0.45)" stroke-width="0.8"/>
+<text x="480" y="282" fill="#1b2a41" font-size="16" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">초안</text>
+<text x="480" y="302" fill="#46607f" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">GPT draft</text>
+</g>
+<g data-motion-item data-step="5" aria-label="5단계 검증: code checks">
+<path d="M 530.49,212.0 H 557.51" fill="none" stroke="#2563eb" stroke-width="1.4" marker-end="url(#banner-arrow-accent)"/>
+<path d="M 563.51 200 A 8.49 4.24 0 0 1 566 197 L 602 179 A 8.49 4.24 0 0 1 614 179 L 650 197 A 8.49 4.24 0 0 1 652.49 200 L 652.49 224 A 8.49 4.24 0 0 1 650 227 L 614 245 A 8.49 4.24 0 0 1 602 245 L 566 227 A 8.49 4.24 0 0 1 563.51 224 Z" fill="#ffffff"/>
+<path d="M 614 179 L 650 197 A 8.49 4.24 0 0 1 650 203 L 614 221 A 8.49 4.24 0 0 1 602 221 L 566 203 A 8.49 4.24 0 0 1 566 197 L 602 179 A 8.49 4.24 0 0 1 614 179 Z" fill="rgba(37,99,235,0.1)"/>
+<path d="M 563.51 200 A 8.49 4.24 0 0 0 566 203 L 602 221 A 8.49 4.24 0 0 0 608 222.24 L 608 246.24 A 8.49 4.24 0 0 1 602 245 L 566 227 A 8.49 4.24 0 0 1 563.51 224 Z" fill="rgba(37,99,235,0.2)"/>
+<path d="M 608 222.24 A 8.49 4.24 0 0 0 614 221 L 650 203 A 8.49 4.24 0 0 0 652.49 200 L 652.49 224 A 8.49 4.24 0 0 1 650 227 L 614 245 A 8.49 4.24 0 0 1 608 246.24 Z" fill="rgba(37,99,235,0.32)"/>
+<path d="M 563.51 200 A 8.49 4.24 0 0 0 566 203 L 602 221 A 8.49 4.24 0 0 0 608 222.24 A 8.49 4.24 0 0 0 614 221 L 650 203 A 8.49 4.24 0 0 0 652.49 200" fill="none" stroke="rgba(37,99,235,0.7)" stroke-width="0.8"/>
+<path d="M 563.51 200 A 8.49 4.24 0 0 1 566 197 L 602 179 A 8.49 4.24 0 0 1 614 179 L 650 197 A 8.49 4.24 0 0 1 652.49 200 L 652.49 224 A 8.49 4.24 0 0 1 650 227 L 614 245 A 8.49 4.24 0 0 1 602 245 L 566 227 A 8.49 4.24 0 0 1 563.51 224 Z" fill="none" stroke="#2563eb" stroke-width="1.2" stroke-linejoin="round"/>
+<path d="M 611 185.5 L 637 198.5 A 4.24 2.12 0 0 1 637 201.5 L 611 214.5 A 4.24 2.12 0 0 1 605 214.5 L 579 201.5 A 4.24 2.12 0 0 1 579 198.5 L 605 185.5 A 4.24 2.12 0 0 1 611 185.5 Z" fill="rgba(37,99,235,0.08)" stroke="rgba(37,99,235,0.55)" stroke-width="0.8"/>
+<path d="M 610 193 L 622 199 A 2.83 1.41 0 0 1 622 201 L 610 207 A 2.83 1.41 0 0 1 606 207 L 594 201 A 2.83 1.41 0 0 1 594 199 L 606 193 A 2.83 1.41 0 0 1 610 193 Z" fill="none" stroke="#2563eb" stroke-width="0.8"/>
+<text x="608" y="282" fill="#1b2a41" font-size="16" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">검증</text>
+<text x="608" y="302" fill="#2563eb" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">code checks</text>
+</g>
+<g data-motion-item data-step="6" aria-label="6단계 승인: Discord buttons">
+<path d="M 658.49,212.0 H 685.51" fill="none" stroke="#46607f" stroke-width="1.2" marker-end="url(#banner-arrow)"/>
+<path d="M 691.51 200 A 8.49 4.24 0 0 1 694 197 L 730 179 A 8.49 4.24 0 0 1 742 179 L 778 197 A 8.49 4.24 0 0 1 780.49 200 L 780.49 224 A 8.49 4.24 0 0 1 778 227 L 742 245 A 8.49 4.24 0 0 1 730 245 L 694 227 A 8.49 4.24 0 0 1 691.51 224 Z" fill="#ffffff"/>
+<path d="M 742 179 L 778 197 A 8.49 4.24 0 0 1 778 203 L 742 221 A 8.49 4.24 0 0 1 730 221 L 694 203 A 8.49 4.24 0 0 1 694 197 L 730 179 A 8.49 4.24 0 0 1 742 179 Z" fill="rgba(27,42,65,0.03)"/>
+<path d="M 691.51 200 A 8.49 4.24 0 0 0 694 203 L 730 221 A 8.49 4.24 0 0 0 736 222.24 L 736 246.24 A 8.49 4.24 0 0 1 730 245 L 694 227 A 8.49 4.24 0 0 1 691.51 224 Z" fill="rgba(27,42,65,0.08)"/>
+<path d="M 736 222.24 A 8.49 4.24 0 0 0 742 221 L 778 203 A 8.49 4.24 0 0 0 780.49 200 L 780.49 224 A 8.49 4.24 0 0 1 778 227 L 742 245 A 8.49 4.24 0 0 1 736 246.24 Z" fill="rgba(27,42,65,0.16)"/>
+<path d="M 691.51 200 A 8.49 4.24 0 0 0 694 203 L 730 221 A 8.49 4.24 0 0 0 736 222.24 A 8.49 4.24 0 0 0 742 221 L 778 203 A 8.49 4.24 0 0 0 780.49 200" fill="none" stroke="rgba(27,42,65,0.55)" stroke-width="0.8"/>
+<path d="M 691.51 200 A 8.49 4.24 0 0 1 694 197 L 730 179 A 8.49 4.24 0 0 1 742 179 L 778 197 A 8.49 4.24 0 0 1 780.49 200 L 780.49 224 A 8.49 4.24 0 0 1 778 227 L 742 245 A 8.49 4.24 0 0 1 730 245 L 694 227 A 8.49 4.24 0 0 1 691.51 224 Z" fill="none" stroke="#1b2a41" stroke-width="1.2" stroke-linejoin="round"/>
+<path d="M 736 186 L 764 200 A 2.83 1.41 0 0 1 764 202 L 758 205 A 2.83 1.41 0 0 1 754 205 L 726 191 A 2.83 1.41 0 0 1 726 189 L 732 186 A 2.83 1.41 0 0 1 736 186 Z" fill="none" stroke="rgba(27,42,65,0.45)" stroke-width="0.8"/>
+<path d="M 720 194 L 730 199 A 2.83 1.41 0 0 1 730 201 L 722 205 A 2.83 1.41 0 0 1 718 205 L 708 200 A 2.83 1.41 0 0 1 708 198 L 716 194 A 2.83 1.41 0 0 1 720 194 Z" fill="rgba(37,99,235,0.1)" stroke="rgba(27,42,65,0.45)" stroke-width="0.8"/>
+<path d="M 738 203 L 748 208 A 2.83 1.41 0 0 1 748 210 L 740 214 A 2.83 1.41 0 0 1 736 214 L 726 209 A 2.83 1.41 0 0 1 726 207 L 734 203 A 2.83 1.41 0 0 1 738 203 Z" fill="none" stroke="rgba(27,42,65,0.45)" stroke-width="0.8"/>
+<text x="736" y="282" fill="#1b2a41" font-size="16" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">승인</text>
+<text x="736" y="302" fill="#46607f" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">Discord buttons</text>
+</g>
+<g data-motion-item data-step="7" aria-label="7단계 기록: ClickUp page">
+<path d="M 786.49,212.0 H 813.51" fill="none" stroke="#46607f" stroke-width="1.2" marker-end="url(#banner-arrow)"/>
+<path d="M 819.51 200 A 8.49 4.24 0 0 1 822 197 L 858 179 A 8.49 4.24 0 0 1 870 179 L 906 197 A 8.49 4.24 0 0 1 908.49 200 L 908.49 224 A 8.49 4.24 0 0 1 906 227 L 870 245 A 8.49 4.24 0 0 1 858 245 L 822 227 A 8.49 4.24 0 0 1 819.51 224 Z" fill="#ffffff"/>
+<path d="M 870 179 L 906 197 A 8.49 4.24 0 0 1 906 203 L 870 221 A 8.49 4.24 0 0 1 858 221 L 822 203 A 8.49 4.24 0 0 1 822 197 L 858 179 A 8.49 4.24 0 0 1 870 179 Z" fill="rgba(27,42,65,0.03)"/>
+<path d="M 819.51 200 A 8.49 4.24 0 0 0 822 203 L 858 221 A 8.49 4.24 0 0 0 864 222.24 L 864 246.24 A 8.49 4.24 0 0 1 858 245 L 822 227 A 8.49 4.24 0 0 1 819.51 224 Z" fill="rgba(27,42,65,0.08)"/>
+<path d="M 864 222.24 A 8.49 4.24 0 0 0 870 221 L 906 203 A 8.49 4.24 0 0 0 908.49 200 L 908.49 224 A 8.49 4.24 0 0 1 906 227 L 870 245 A 8.49 4.24 0 0 1 864 246.24 Z" fill="rgba(27,42,65,0.16)"/>
+<path d="M 819.51 200 A 8.49 4.24 0 0 0 822 203 L 858 221 A 8.49 4.24 0 0 0 864 222.24 A 8.49 4.24 0 0 0 870 221 L 906 203 A 8.49 4.24 0 0 0 908.49 200" fill="none" stroke="rgba(27,42,65,0.55)" stroke-width="0.8"/>
+<path d="M 819.51 200 A 8.49 4.24 0 0 1 822 197 L 858 179 A 8.49 4.24 0 0 1 870 179 L 906 197 A 8.49 4.24 0 0 1 908.49 200 L 908.49 224 A 8.49 4.24 0 0 1 906 227 L 870 245 A 8.49 4.24 0 0 1 858 245 L 822 227 A 8.49 4.24 0 0 1 819.51 224 Z" fill="none" stroke="#1b2a41" stroke-width="1.2" stroke-linejoin="round"/>
+<path d="M 829.76 194 A 4.24 2.12 0 0 1 831 192.5 L 861 177.5 A 4.24 2.12 0 0 1 867 177.5 L 897 192.5 A 4.24 2.12 0 0 1 898.24 194 L 898.24 200 A 4.24 2.12 0 0 1 897 201.5 L 867 216.5 A 4.24 2.12 0 0 1 861 216.5 L 831 201.5 A 4.24 2.12 0 0 1 829.76 200 Z" fill="#ffffff"/>
+<path d="M 867 177.5 L 897 192.5 A 4.24 2.12 0 0 1 897 195.5 L 867 210.5 A 4.24 2.12 0 0 1 861 210.5 L 831 195.5 A 4.24 2.12 0 0 1 831 192.5 L 861 177.5 A 4.24 2.12 0 0 1 867 177.5 Z" fill="rgba(27,42,65,0.03)"/>
+<path d="M 829.76 194 A 4.24 2.12 0 0 0 831 195.5 L 861 210.5 A 4.24 2.12 0 0 0 864 211.12 L 864 217.12 A 4.24 2.12 0 0 1 861 216.5 L 831 201.5 A 4.24 2.12 0 0 1 829.76 200 Z" fill="rgba(27,42,65,0.08)"/>
+<path d="M 864 211.12 A 4.24 2.12 0 0 0 867 210.5 L 897 195.5 A 4.24 2.12 0 0 0 898.24 194 L 898.24 200 A 4.24 2.12 0 0 1 897 201.5 L 867 216.5 A 4.24 2.12 0 0 1 864 217.12 Z" fill="rgba(27,42,65,0.16)"/>
+<path d="M 829.76 194 A 4.24 2.12 0 0 0 831 195.5 L 861 210.5 A 4.24 2.12 0 0 0 864 211.12 A 4.24 2.12 0 0 0 867 210.5 L 897 195.5 A 4.24 2.12 0 0 0 898.24 194" fill="none" stroke="rgba(27,42,65,0.55)" stroke-width="0.8"/>
+<path d="M 829.76 194 A 4.24 2.12 0 0 1 831 192.5 L 861 177.5 A 4.24 2.12 0 0 1 867 177.5 L 897 192.5 A 4.24 2.12 0 0 1 898.24 194 L 898.24 200 A 4.24 2.12 0 0 1 897 201.5 L 867 216.5 A 4.24 2.12 0 0 1 861 216.5 L 831 201.5 A 4.24 2.12 0 0 1 829.76 200 Z" fill="none" stroke="#1b2a41" stroke-width="1.2" stroke-linejoin="round"/>
+<path d="M 837.76 188 A 4.24 2.12 0 0 1 839 186.5 L 861 175.5 A 4.24 2.12 0 0 1 867 175.5 L 889 186.5 A 4.24 2.12 0 0 1 890.24 188 L 890.24 194 A 4.24 2.12 0 0 1 889 195.5 L 867 206.5 A 4.24 2.12 0 0 1 861 206.5 L 839 195.5 A 4.24 2.12 0 0 1 837.76 194 Z" fill="#ffffff"/>
+<path d="M 867 175.5 L 889 186.5 A 4.24 2.12 0 0 1 889 189.5 L 867 200.5 A 4.24 2.12 0 0 1 861 200.5 L 839 189.5 A 4.24 2.12 0 0 1 839 186.5 L 861 175.5 A 4.24 2.12 0 0 1 867 175.5 Z" fill="rgba(27,42,65,0.03)"/>
+<path d="M 837.76 188 A 4.24 2.12 0 0 0 839 189.5 L 861 200.5 A 4.24 2.12 0 0 0 864 201.12 L 864 207.12 A 4.24 2.12 0 0 1 861 206.5 L 839 195.5 A 4.24 2.12 0 0 1 837.76 194 Z" fill="rgba(27,42,65,0.08)"/>
+<path d="M 864 201.12 A 4.24 2.12 0 0 0 867 200.5 L 889 189.5 A 4.24 2.12 0 0 0 890.24 188 L 890.24 194 A 4.24 2.12 0 0 1 889 195.5 L 867 206.5 A 4.24 2.12 0 0 1 864 207.12 Z" fill="rgba(27,42,65,0.16)"/>
+<path d="M 837.76 188 A 4.24 2.12 0 0 0 839 189.5 L 861 200.5 A 4.24 2.12 0 0 0 864 201.12 A 4.24 2.12 0 0 0 867 200.5 L 889 189.5 A 4.24 2.12 0 0 0 890.24 188" fill="none" stroke="rgba(27,42,65,0.55)" stroke-width="0.8"/>
+<path d="M 837.76 188 A 4.24 2.12 0 0 1 839 186.5 L 861 175.5 A 4.24 2.12 0 0 1 867 175.5 L 889 186.5 A 4.24 2.12 0 0 1 890.24 188 L 890.24 194 A 4.24 2.12 0 0 1 889 195.5 L 867 206.5 A 4.24 2.12 0 0 1 861 206.5 L 839 195.5 A 4.24 2.12 0 0 1 837.76 194 Z" fill="none" stroke="#1b2a41" stroke-width="1.2" stroke-linejoin="round"/>
+<text x="864" y="282" fill="#1b2a41" font-size="16" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">기록</text>
+<text x="864" y="302" fill="#46607f" font-size="12" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">ClickUp page</text>
+</g>
+      </svg>
+    </div>
+
+    <div data-motion-controls role="group" aria-label="Diagram playback controls">
+      <button type="button" data-motion-action="prev">Previous</button>
+      <button type="button" data-motion-action="play" aria-pressed="false">Play</button>
+      <button type="button" data-motion-action="pause" aria-pressed="true">Pause</button>
+      <button type="button" data-motion-action="next">Next</button>
+      <button type="button" data-motion-action="replay">Replay</button>
+      <span class="keyboard-help">←/→ step · Space play/pause · R replay · Home/End jump</span>
+      <span data-motion-status-visible aria-hidden="true">Step <span data-motion-step-label>7</span> of 7</span>
+    </div>
+    <p class="sr-only" data-motion-status role="status" aria-live="polite" aria-atomic="true"></p>
+    <noscript><p>Animation controls require JavaScript. The complete final diagram is shown above.</p></noscript>
+  </main>
+
+  <script data-diagram-controls>
+    (() => {
+      const params = new URLSearchParams(location.search);
+      const staticOverride = params.get('motion') === 'static' || document.documentElement.dataset.motion === 'static';
+      const requestedStep = params.get('step');
+      const reduce = matchMedia('(prefers-reduced-motion: reduce)');
+      document.fonts.ready.then(() => { document.documentElement.dataset.fontsReady = 'true'; });
+
+      document.querySelectorAll('[data-motion-root]').forEach((root) => {
+        const count = Number(root.dataset.stepCount);
+        const hold = parseFloat(getComputedStyle(root).getPropertyValue('--motion-hold')) || 720;
+        const parsedStep = requestedStep !== null && /^\d+$/.test(requestedStep) ? Number(requestedStep) : null;
+        const exactStep = params.get('motion') === 'step' && Number.isSafeInteger(parsedStep) && parsedStep >= 0 && parsedStep <= count ? parsedStep : null;
+        const items = [...root.querySelectorAll('[data-motion-item]')];
+        const labels = Array.from({ length: count + 1 }, (_, index) => index === 0
+          ? 'Ready'
+          : items.filter((item) => !item.hasAttribute('data-motion-decorative') && Number(item.dataset.step) === index)
+              .map((item) => item.getAttribute('aria-label')).join('; '));
+        const controls = root.querySelector('[data-motion-controls]');
+        const status = root.querySelector('[data-motion-status]');
+        const visibleStep = root.querySelector('[data-motion-step-label]');
+        let step = count;
+        let timer = 0;
+        let playing = false;
+        let stepBeforeReduce = 0;
+        let resumeAfterReduce = root.dataset.motionMode === 'reveal';
+
+        const buttons = (action) => controls.querySelector(`[data-motion-action="${action}"]`);
+        const clearClock = () => { window.clearTimeout(timer); timer = 0; };
+        const announce = () => { status.textContent = `Step ${step} of ${count}: ${labels[step] || 'Complete'}`; };
+        const setControlsAvailable = (available) => {
+          controls.hidden = !available;
+          controls.setAttribute('aria-hidden', String(!available));
+          controls.dataset.playbackDisabled = String(!available);
+          controls.querySelectorAll('button').forEach((control) => { control.disabled = !available; });
+        };
+
+        function render(next, userInitiated = false) {
+          step = Math.max(0, Math.min(count, next));
+          root.dataset.stepCurrent = String(step);
+          root.dataset.frame = step === count ? 'end' : step === 0 ? 'start' : 'step';
+          items.forEach((item) => {
+            const itemStep = Number(item.dataset.step);
+            item.classList.toggle('is-visible', itemStep <= step);
+            item.classList.toggle('is-current', itemStep === step);
+          });
+          if (visibleStep) visibleStep.textContent = String(step);
+          const unavailable = controls.dataset.playbackDisabled === 'true';
+          buttons('prev').disabled = unavailable || step === 0;
+          buttons('next').disabled = unavailable || step === count;
+          if (userInitiated) announce();
+        }
+
+        function pause(userInitiated = false) {
+          clearClock();
+          playing = false;
+          root.classList.remove('is-playing');
+          buttons('play').setAttribute('aria-pressed', 'false');
+          buttons('pause').setAttribute('aria-pressed', 'true');
+          if (userInitiated) status.textContent = `Paused at step ${step} of ${count}`;
+        }
+
+        function finish() {
+          pause(false);
+          root.dataset.frame = 'end';
+          status.textContent = `Complete · step ${count} of ${count}`;
+        }
+
+        function tick() {
+          if (!playing) return;
+          if (step >= count) { finish(); return; }
+          render(step + 1, false);
+          if (step >= count) { finish(); return; }
+          timer = window.setTimeout(tick, hold);
+        }
+
+        function play(fromStart = false, userInitiated = false) {
+          clearClock();
+          if (fromStart || step >= count) render(0, userInitiated);
+          playing = true;
+          root.classList.add('is-playing');
+          buttons('play').setAttribute('aria-pressed', 'true');
+          buttons('pause').setAttribute('aria-pressed', 'false');
+          timer = window.setTimeout(tick, hold);
+        }
+
+        controls.addEventListener('click', (event) => {
+          const button = event.target.closest('[data-motion-action]');
+          if (!button) return;
+          const action = button.dataset.motionAction;
+          if (action === 'play') play(false, true);
+          if (action === 'pause') pause(true);
+          if (action === 'replay') play(true, true);
+          if (action === 'prev') { pause(false); render(step - 1, true); }
+          if (action === 'next') { pause(false); render(step + 1, true); }
+        });
+
+        root.addEventListener('keydown', (event) => {
+          if (event.target.matches('input, textarea, select, a[href]')) return;
+          const keys = { ArrowLeft: step - 1, ArrowRight: step + 1, Home: 0, End: count };
+          if (event.code === 'Space' && !event.target.closest('button')) {
+            event.preventDefault();
+            playing ? pause(true) : play(false, true);
+            return;
+          }
+          if (!event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === 'r') {
+            event.preventDefault();
+            play(true, true);
+            return;
+          }
+          if (!(event.key in keys)) return;
+          event.preventDefault();
+          pause(false);
+          render(keys[event.key], true);
+        });
+
+        document.addEventListener('visibilitychange', () => {
+          if (document.visibilityState === 'hidden' && playing) pause(false);
+        });
+        reduce.addEventListener('change', (event) => {
+          if (event.matches && root.dataset.motionState !== 'reduced') {
+            stepBeforeReduce = step;
+            resumeAfterReduce = playing;
+          }
+          pause(false);
+          if (event.matches) {
+            setControlsAvailable(false);
+            render(count, false);
+            root.dataset.frame = 'static';
+            root.dataset.motionState = 'reduced';
+            status.textContent = 'Reduced motion · complete static frame · playback controls unavailable';
+          } else if (staticOverride || root.dataset.motionMode === 'none') {
+            setControlsAvailable(false);
+            render(count, false);
+            root.dataset.frame = 'static';
+            root.dataset.motionState = 'static';
+            status.textContent = 'Static frame · complete diagram · playback controls unavailable';
+          } else {
+            delete root.dataset.motionState;
+            if (exactStep !== null) {
+              setControlsAvailable(false);
+              render(exactStep, false);
+              root.dataset.frame = 'step';
+              root.dataset.motionState = 'test';
+              status.textContent = `Test frame · step ${step} of ${count} · playback controls unavailable`;
+            } else {
+              setControlsAvailable(true);
+              render(stepBeforeReduce, false);
+              status.textContent = `Ready · step ${step} of ${count}`;
+              if (resumeAfterReduce && root.dataset.motionMode === 'reveal') {
+                play(false, false);
+              }
+            }
+            resumeAfterReduce = false;
+          }
+        });
+
+        if (staticOverride) {
+          document.documentElement.dataset.motion = 'static';
+          pause(false);
+          setControlsAvailable(false);
+          render(count, false);
+          root.dataset.frame = 'static';
+          root.dataset.motionState = 'static';
+          status.textContent = 'Static frame · complete diagram · playback controls unavailable';
+        } else if (reduce.matches || root.dataset.motionMode === 'none') {
+          pause(false);
+          setControlsAvailable(false);
+          render(count, false);
+          root.dataset.frame = 'static';
+          root.dataset.motionState = reduce.matches ? 'reduced' : 'static';
+          status.textContent = reduce.matches
+            ? 'Reduced motion · complete static frame · playback controls unavailable'
+            : 'Static frame · complete diagram · playback controls unavailable';
+        } else if (exactStep !== null) {
+          document.documentElement.dataset.motion = 'step';
+          pause(false);
+          setControlsAvailable(false);
+          render(exactStep, false);
+          root.dataset.frame = 'step';
+          root.dataset.motionState = 'test';
+          status.textContent = `Test frame · step ${step} of ${count} · playback controls unavailable`;
+        } else if (root.dataset.motionMode === 'reveal') {
+          setControlsAvailable(true);
+          render(0, false);
+          play(false, false);
+        } else {
+          pause(false);
+          setControlsAvailable(true);
+          render(0, false);
+          status.textContent = `Ready · step 0 of ${count}`;
+        }
+        root.classList.add('motion-ready');
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>meeting-bot 시스템 구성</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif:ital@0;1&family=Noto+Sans+KR:wght@400;500;600&family=Noto+Serif+KR:wght@400&family=Noto+Sans+TC:wght@400;500;600&family=Noto+Serif+TC:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      /* meeting-bot skin: light-blue semantic roles (diagram-design style guide, custom tokens) */
+      --color-paper:   #f4f8fd;
+      --color-ink:     #1b2a41;
+      --color-muted:   #46607f;
+      --color-accent:  #2563eb;
+      --color-link:    #0e7490;
+      --font-sans:     'Geist', 'Noto Sans KR', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', 'Noto Serif', 'Noto Serif KR', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+
+    .frame { max-width: 1200px; width: 100%; }
+    .diagram-container { width: 100%; overflow-x: auto; }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+
+    svg { width: 100%; min-width: 960px; display: block; }
+    @media print {
+      .diagram-container { overflow-x: visible; }
+      svg { min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Architecture · meeting-bot</p>
+    <h1>meeting-bot 시스템 구성</h1>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 960 632" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="architecture-title architecture-desc">
+        <title id="architecture-title">meeting-bot 시스템 구성</title>
+        <desc id="architecture-desc">녹음 봇과 n8n이 Oracle A1 서버의 Docker compose 안에서 recordings 볼륨을 공유하고, Discord에서 음성과 반응·버튼을 받아 OpenAI로 녹취와 초안을 만든 뒤 승인된 회의록을 ClickUp에 쓰는 구성.</desc>
+<defs>
+<marker id="architecture-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#46607f"/></marker>
+<marker id="architecture-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2563eb"/></marker>
+<marker id="architecture-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#0e7490"/></marker>
+<marker id="architecture-arrow-soft" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#6f86a3"/></marker>
+<marker id="architecture-arrow-open" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polyline points="0 0, 8 3, 0 6" fill="none" stroke="#46607f" stroke-width="1.2"/></marker>
+</defs>
+<rect width="100%" height="100%" fill="#f4f8fd"/>
+<rect x="24" y="64" width="680" height="120" rx="8" fill="rgba(27,42,65,0.02)" stroke="rgba(27,42,65,0.14)" stroke-width="0.8"/>
+<rect x="36" y="58" width="56" height="12" rx="2" fill="#f4f8fd"/>
+<text x="42" y="67" fill="#46607f" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.14em">DISCORD</text>
+<rect x="24" y="248" width="680" height="288" rx="8" fill="rgba(27,42,65,0.02)" stroke="rgba(27,42,65,0.14)" stroke-width="0.8"/>
+<rect x="176" y="242" width="168" height="12" rx="2" fill="#f4f8fd"/>
+<text x="182" y="251" fill="#46607f" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.14em">ORACLE A1 · DOCKER COMPOSE</text>
+<rect x="752" y="248" width="184" height="288" rx="8" fill="rgba(27,42,65,0.02)" stroke="rgba(27,42,65,0.14)" stroke-width="0.8" stroke-dasharray="4,4"/>
+<rect x="764" y="242" width="84" height="12" rx="2" fill="#f4f8fd"/>
+<text x="770" y="251" fill="#46607f" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.14em">EXTERNAL API</text>
+<path d="M 88,160 V 280" fill="none" stroke="#46607f" stroke-width="1.2" marker-end="url(#architecture-arrow)"/>
+<path d="M 564,160 V 200 Q 564,208 556,208 H 152 Q 144,208 144,216 V 280" fill="none" stroke="#46607f" stroke-width="1.2" marker-end="url(#architecture-arrow)"/>
+<path d="M 116,352 V 440" fill="none" stroke="#46607f" stroke-width="1.2" marker-end="url(#architecture-arrow)"/>
+<path d="M 192,304 H 272" fill="none" stroke="#2563eb" stroke-width="1.4" marker-end="url(#architecture-arrow-accent)"/>
+<path d="M 192,328 H 272" fill="none" stroke="#46607f" stroke-width="1.2" marker-end="url(#architecture-arrow)"/>
+<path d="M 192,476 H 324 Q 332,476 332,468 V 352" fill="none" stroke="#46607f" stroke-width="1.2" marker-end="url(#architecture-arrow)"/>
+<path d="M 448,304 H 768" fill="none" stroke="#0e7490" stroke-width="1.2" marker-end="url(#architecture-arrow-link)"/>
+<path d="M 448,328 H 712 Q 720,328 720,336 V 468 Q 720,476 728,476 H 768" fill="none" stroke="#0e7490" stroke-width="1.2" marker-end="url(#architecture-arrow-link)"/>
+<path d="M 416,280 V 232 Q 416,224 424,224 H 596 Q 604,224 604,216 V 160" fill="none" stroke="#0e7490" stroke-width="1.2" marker-end="url(#architecture-arrow-link)"/>
+<path d="M 644,440 V 336 a 8,8 0 0,1 0,-16 V 312 a 8,8 0 0,1 0,-16 V 160" fill="none" stroke="#0e7490" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#architecture-arrow-link)"/>
+<path d="M 388,352 V 488 Q 388,496 396,496 H 528" fill="none" stroke="#46607f" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#architecture-arrow)"/>
+<rect x="94.0" y="226.0" width="32" height="12" rx="2" fill="#f4f8fd"/>
+<text x="110.0" y="235" fill="#6f86a3" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">OPUS</text>
+<rect x="316.0" y="190.0" width="72" height="12" rx="2" fill="#f4f8fd"/>
+<text x="352" y="199.0" fill="#6f86a3" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">INTERACTIONS</text>
+<rect x="122.0" y="390.0" width="36" height="12" rx="2" fill="#f4f8fd"/>
+<text x="140.0" y="399" fill="#6f86a3" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">WRITE</text>
+<rect x="206.0" y="286.0" width="52" height="12" rx="2" fill="#f4f8fd"/>
+<text x="232.0" y="295.0" fill="#2563eb" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">MANIFEST</text>
+<rect x="212.0" y="334.0" width="40" height="12" rx="2" fill="#f4f8fd"/>
+<text x="232.0" y="343.0" fill="#6f86a3" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">RESUME</text>
+<rect x="230.0" y="458.0" width="56" height="12" rx="2" fill="#f4f8fd"/>
+<text x="258.0" y="467.0" fill="#6f86a3" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">READ ONLY</text>
+<rect x="670.0" y="286.0" width="68" height="12" rx="2" fill="#f4f8fd"/>
+<text x="704" y="295.0" fill="#0e7490" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">STT · DRAFT</text>
+<rect x="726.0" y="390.0" width="64" height="12" rx="2" fill="#f4f8fd"/>
+<text x="758.0" y="399" fill="#0e7490" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">GET · POST</text>
+<rect x="474.0" y="230.0" width="72" height="12" rx="2" fill="#f4f8fd"/>
+<text x="510" y="239.0" fill="#0e7490" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">DISCORD REST</text>
+<rect x="650.0" y="394.0" width="36" height="12" rx="2" fill="#f4f8fd"/>
+<text x="668.0" y="403" fill="#0e7490" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">ALERT</text>
+<rect x="418.0" y="478.0" width="84" height="12" rx="2" fill="#f4f8fd"/>
+<text x="460" y="487.0" fill="#6f86a3" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">ERROR WORKFLOW</text>
+<rect x="40" y="88" width="152" height="72" rx="6" fill="#f4f8fd"/>
+<rect x="40" y="88" width="152" height="72" rx="6" fill="rgba(27,42,65,0.03)" stroke="rgba(27,42,65,0.3)" stroke-width="1"/>
+<rect x="48" y="94" width="32" height="12" rx="2" fill="none" stroke="rgba(27,42,65,0.22)" stroke-width="0.8"/>
+<text x="64.0" y="103" fill="#6f86a3" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">VOICE</text>
+<text x="116.0" y="125.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">음성 채널</text>
+<text x="116.0" y="140.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">per-speaker Opus</text>
+<text x="116.0" y="153.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">DAVE E2EE</text>
+<rect x="528" y="88" width="152" height="72" rx="6" fill="#f4f8fd"/>
+<rect x="528" y="88" width="152" height="72" rx="6" fill="rgba(27,42,65,0.03)" stroke="rgba(27,42,65,0.3)" stroke-width="1"/>
+<rect x="536" y="94" width="28" height="12" rx="2" fill="none" stroke="rgba(27,42,65,0.22)" stroke-width="0.8"/>
+<text x="550.0" y="103" fill="#6f86a3" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">TEXT</text>
+<text x="604.0" y="125.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">회의 채널</text>
+<text x="604.0" y="140.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">commands · reactions</text>
+<text x="604.0" y="153.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">draft · buttons</text>
+<rect x="40" y="280" width="152" height="72" rx="6" fill="#f4f8fd"/>
+<rect x="40" y="280" width="152" height="72" rx="6" fill="#ffffff" stroke="#1b2a41" stroke-width="1"/>
+<rect x="48" y="286" width="24" height="12" rx="2" fill="none" stroke="rgba(27,42,65,0.4)" stroke-width="0.8"/>
+<text x="60.0" y="295" fill="#1b2a41" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">BOT</text>
+<text x="116.0" y="317.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">녹음 봇</text>
+<text x="116.0" y="332.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">discord.js · voice</text>
+<text x="116.0" y="345.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">Node 24 · ffmpeg</text>
+<rect x="272" y="280" width="176" height="72" rx="6" fill="#f4f8fd"/>
+<rect x="272" y="280" width="176" height="72" rx="6" fill="rgba(37,99,235,0.08)" stroke="#2563eb" stroke-width="1"/>
+<rect x="280" y="286" width="24" height="12" rx="2" fill="none" stroke="rgba(37,99,235,0.5)" stroke-width="0.8"/>
+<text x="292.0" y="295" fill="#2563eb" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">N8N</text>
+<text x="360.0" y="317.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">회의 녹취 워크플로</text>
+<text x="360.0" y="332.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">n8n 2.42.6 · 40 nodes</text>
+<text x="360.0" y="345.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">Wait ≤ 3 days</text>
+<rect x="40" y="440" width="152" height="72" rx="6" fill="#f4f8fd"/>
+<rect x="40" y="440" width="152" height="72" rx="6" fill="rgba(27,42,65,0.05)" stroke="#46607f" stroke-width="1"/>
+<rect x="48" y="446" width="40" height="12" rx="2" fill="none" stroke="rgba(70,96,127,0.50)" stroke-width="0.8"/>
+<text x="68.0" y="455" fill="#46607f" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">VOLUME</text>
+<text x="116.0" y="477.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">recordings</text>
+<text x="116.0" y="492.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">webm · manifest.json</text>
+<text x="116.0" y="505.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">kept 7 days</text>
+<rect x="528" y="440" width="152" height="72" rx="6" fill="#f4f8fd"/>
+<rect x="528" y="440" width="152" height="72" rx="6" fill="rgba(27,42,65,0.02)" stroke="rgba(27,42,65,0.2)" stroke-width="1" stroke-dasharray="4,3"/>
+<rect x="536" y="446" width="24" height="12" rx="2" fill="none" stroke="rgba(27,42,65,0.2)" stroke-width="0.8"/>
+<text x="548.0" y="455" fill="#6f86a3" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">N8N</text>
+<text x="604.0" y="477.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">실패 알림 워크플로</text>
+<text x="604.0" y="492.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">Error Trigger</text>
+<text x="604.0" y="505.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">execution:read</text>
+<rect x="768" y="280" width="152" height="72" rx="6" fill="#f4f8fd"/>
+<rect x="768" y="280" width="152" height="72" rx="6" fill="rgba(27,42,65,0.03)" stroke="rgba(27,42,65,0.3)" stroke-width="1"/>
+<rect x="776" y="286" width="24" height="12" rx="2" fill="none" stroke="rgba(27,42,65,0.22)" stroke-width="0.8"/>
+<text x="788.0" y="295" fill="#6f86a3" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">API</text>
+<text x="844.0" y="317.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">OpenAI</text>
+<text x="844.0" y="332.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">gpt-4o-transcribe</text>
+<text x="844.0" y="345.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">gpt-6-luna</text>
+<rect x="768" y="440" width="152" height="72" rx="6" fill="#f4f8fd"/>
+<rect x="768" y="440" width="152" height="72" rx="6" fill="rgba(27,42,65,0.03)" stroke="rgba(27,42,65,0.3)" stroke-width="1"/>
+<rect x="776" y="446" width="24" height="12" rx="2" fill="none" stroke="rgba(27,42,65,0.22)" stroke-width="0.8"/>
+<text x="788.0" y="455" fill="#6f86a3" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">API</text>
+<text x="844.0" y="477.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">ClickUp</text>
+<text x="844.0" y="492.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">API v3 · text/md</text>
+<text x="844.0" y="505.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">minutes page</text>
+<line x1="40" y1="568" x2="920" y2="568" stroke="rgba(27,42,65,0.1)" stroke-width="0.8"/>
+<text x="40" y="584" fill="#46607f" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.18em">LEGEND</text>
+<rect x="40" y="600" width="14" height="10" rx="2" fill="rgba(37,99,235,0.08)" stroke="#2563eb" stroke-width="1"/>
+<text x="60" y="608" fill="#46607f" font-size="12" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">중심 워크플로</text>
+<rect x="168" y="600" width="14" height="10" rx="2" fill="#ffffff" stroke="#1b2a41" stroke-width="1"/>
+<text x="188" y="608" fill="#46607f" font-size="12" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">서비스</text>
+<rect x="256" y="600" width="14" height="10" rx="2" fill="rgba(27,42,65,0.05)" stroke="#46607f" stroke-width="1"/>
+<text x="276" y="608" fill="#46607f" font-size="12" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">저장소</text>
+<rect x="344" y="600" width="14" height="10" rx="2" fill="rgba(27,42,65,0.03)" stroke="rgba(27,42,65,0.3)" stroke-width="1"/>
+<text x="364" y="608" fill="#46607f" font-size="12" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">외부 서비스</text>
+<rect x="456" y="600" width="14" height="10" rx="2" fill="rgba(27,42,65,0.02)" stroke="rgba(27,42,65,0.2)" stroke-width="1" stroke-dasharray="4,3"/>
+<text x="476" y="608" fill="#46607f" font-size="12" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">보조 워크플로</text>
+<path d="M 580,605 H 608" fill="none" stroke="#2563eb" stroke-width="1.4" marker-end="url(#architecture-arrow-accent)"/>
+<text x="616" y="608" fill="#46607f" font-size="12" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">회의 종료</text>
+<path d="M 692,605 H 720" fill="none" stroke="#0e7490" stroke-width="1.2" marker-end="url(#architecture-arrow-link)"/>
+<text x="728" y="608" fill="#46607f" font-size="12" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">외부 API</text>
+<path d="M 796,605 H 824" fill="none" stroke="#46607f" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#architecture-arrow)"/>
+<text x="832" y="608" fill="#46607f" font-size="12" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">보조 경로</text>
+      </svg>
+    </div>
+  </div>
+</body>
+</html>

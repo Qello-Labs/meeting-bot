@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>회의 데이터가 가는 곳과 남는 기간</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif:ital@0;1&family=Noto+Sans+KR:wght@400;500;600&family=Noto+Serif+KR:wght@400&family=Noto+Sans+TC:wght@400;500;600&family=Noto+Serif+TC:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      /* meeting-bot skin: light-blue semantic roles (diagram-design style guide, custom tokens) */
+      --color-paper:   #f4f8fd;
+      --color-ink:     #1b2a41;
+      --color-muted:   #46607f;
+      --color-accent:  #2563eb;
+      --color-link:    #0e7490;
+      --font-sans:     'Geist', 'Noto Sans KR', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', 'Noto Serif', 'Noto Serif KR', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+
+    .frame { max-width: 1200px; width: 100%; }
+    .diagram-container { width: 100%; overflow-x: auto; }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+
+    svg { width: 100%; min-width: 960px; display: block; }
+    @media print {
+      .diagram-container { overflow-x: visible; }
+      svg { min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">Data flow · meeting-bot</p>
+    <h1>회의 데이터가 가는 곳과 남는 기간</h1>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 960 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="data-flow-title data-flow-desc">
+        <title id="data-flow-title">회의 데이터가 가는 곳과 남는 기간</title>
+        <desc id="data-flow-desc">회의 한 번의 데이터 흐름: 화자별 음성과 결정 메시지가 서버의 recordings와 n8n 실행 기록에 7일 남고, 음성과 녹취는 학습에 쓰지 않는 OpenAI로 가며, 검증을 통과한 초안이 사람 승인을 거쳐야 ClickUp 회의록 페이지로 남는다.</desc>
+<defs>
+<marker id="data-flow-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#46607f"/></marker>
+<marker id="data-flow-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2563eb"/></marker>
+<marker id="data-flow-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#0e7490"/></marker>
+<marker id="data-flow-arrow-soft" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#6f86a3"/></marker>
+<marker id="data-flow-arrow-open" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polyline points="0 0, 8 3, 0 6" fill="none" stroke="#46607f" stroke-width="1.2"/></marker>
+</defs>
+<rect width="100%" height="100%" fill="#f4f8fd"/>
+<rect x="24" y="64" width="208" height="560" rx="8" fill="rgba(27,42,65,0.02)" stroke="rgba(27,42,65,0.14)" stroke-width="0.8"/>
+<rect x="36" y="58" width="116" height="12" rx="2" fill="#f4f8fd"/>
+<text x="42" y="67" fill="#46607f" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.14em">DISCORD · CLICKUP</text>
+<rect x="368" y="64" width="232" height="296" rx="8" fill="rgba(27,42,65,0.02)" stroke="rgba(27,42,65,0.14)" stroke-width="0.8"/>
+<rect x="380" y="56" width="128" height="16" rx="2" fill="#f4f8fd"/>
+<text x="386" y="68" fill="#46607f" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">서버 · 7일 뒤 삭제</text>
+<rect x="728" y="64" width="208" height="296" rx="8" fill="rgba(27,42,65,0.02)" stroke="rgba(27,42,65,0.14)" stroke-width="0.8" stroke-dasharray="4,4"/>
+<rect x="740" y="56" width="152" height="16" rx="2" fill="#f4f8fd"/>
+<text x="746" y="68" fill="#46607f" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">OpenAI · 학습에 안 씀</text>
+<path d="M 216,132 H 384" fill="none" stroke="#46607f" stroke-width="1.2" marker-end="url(#data-flow-arrow)"/>
+<path d="M 584,132 H 744" fill="none" stroke="#0e7490" stroke-width="1.2" marker-end="url(#data-flow-arrow-link)"/>
+<path d="M 832,168 V 188 Q 832,196 824,196 H 528 Q 520,196 520,204 V 232" fill="none" stroke="#46607f" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#data-flow-arrow)"/>
+<path d="M 216,280 H 384" fill="none" stroke="#46607f" stroke-width="1.2" marker-end="url(#data-flow-arrow)"/>
+<path d="M 584,264 H 744" fill="none" stroke="#0e7490" stroke-width="1.2" marker-end="url(#data-flow-arrow-link)"/>
+<path d="M 744,296 H 584" fill="none" stroke="#46607f" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#data-flow-arrow)"/>
+<path d="M 448,328 V 420 Q 448,428 440,428 H 216" fill="none" stroke="#46607f" stroke-width="1.2" marker-end="url(#data-flow-arrow)"/>
+<path d="M 128,464 V 528" fill="none" stroke="#2563eb" stroke-width="1.4" marker-end="url(#data-flow-arrow-accent)"/>
+<rect x="262.0" y="110.0" width="76" height="16" rx="2" fill="#f4f8fd"/>
+<text x="300.0" y="122.0" fill="#6f86a3" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">화자별 녹음</text>
+<rect x="632.0" y="110.0" width="64" height="16" rx="2" fill="#f4f8fd"/>
+<text x="664.0" y="122.0" fill="#0e7490" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">발화 파일</text>
+<rect x="634.0" y="174.0" width="76" height="16" rx="2" fill="#f4f8fd"/>
+<text x="672" y="186.0" fill="#6f86a3" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">녹취 텍스트</text>
+<rect x="262.0" y="258.0" width="76" height="16" rx="2" fill="#f4f8fd"/>
+<text x="300.0" y="270.0" fill="#6f86a3" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">메시지 원문</text>
+<rect x="610.0" y="242.0" width="108" height="16" rx="2" fill="#f4f8fd"/>
+<text x="664.0" y="254.0" fill="#0e7490" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">녹취·결정·템플릿</text>
+<rect x="614.0" y="302.0" width="100" height="16" rx="2" fill="#f4f8fd"/>
+<text x="664.0" y="314.0" fill="#6f86a3" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">초안 Markdown</text>
+<rect x="252.0" y="406.0" width="96" height="16" rx="2" fill="#f4f8fd"/>
+<text x="300" y="418.0" fill="#6f86a3" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">검증 통과 초안</text>
+<rect x="134.0" y="488.0" width="56" height="16" rx="2" fill="#f0f4f9"/>
+<text x="162.0" y="500.0" fill="#2563eb" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">승인본만</text>
+<rect x="40" y="96" width="176" height="72" rx="6" fill="#f4f8fd"/>
+<rect x="40" y="96" width="176" height="72" rx="6" fill="rgba(70,96,127,0.10)" stroke="#6f86a3" stroke-width="1"/>
+<rect x="48" y="102" width="32" height="12" rx="2" fill="none" stroke="rgba(111,134,163,0.40)" stroke-width="0.8"/>
+<text x="64.0" y="111" fill="#6f86a3" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">VOICE</text>
+<text x="128.0" y="140.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">회의 음성</text>
+<text x="128.0" y="155.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">speaker streams</text>
+<rect x="40" y="244" width="176" height="72" rx="6" fill="#f4f8fd"/>
+<rect x="40" y="244" width="176" height="72" rx="6" fill="rgba(27,42,65,0.03)" stroke="rgba(27,42,65,0.3)" stroke-width="1"/>
+<rect x="48" y="250" width="28" height="12" rx="2" fill="none" stroke="rgba(27,42,65,0.22)" stroke-width="0.8"/>
+<text x="62.0" y="259" fill="#6f86a3" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">CHAT</text>
+<text x="128.0" y="288.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">결정 메시지</text>
+<text x="128.0" y="303.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">reaction · text · link</text>
+<rect x="40" y="392" width="176" height="72" rx="6" fill="#f4f8fd"/>
+<rect x="40" y="392" width="176" height="72" rx="6" fill="rgba(27,42,65,0.03)" stroke="rgba(27,42,65,0.3)" stroke-width="1"/>
+<rect x="48" y="398" width="28" height="12" rx="2" fill="none" stroke="rgba(27,42,65,0.22)" stroke-width="0.8"/>
+<text x="62.0" y="407" fill="#6f86a3" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">CHAT</text>
+<text x="128.0" y="436.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">초안 메시지</text>
+<text x="128.0" y="451.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">embed · .md · buttons</text>
+<rect x="40" y="528" width="176" height="72" rx="6" fill="#f4f8fd"/>
+<rect x="40" y="528" width="176" height="72" rx="6" fill="rgba(37,99,235,0.08)" stroke="#2563eb" stroke-width="1"/>
+<rect x="48" y="534" width="24" height="12" rx="2" fill="none" stroke="rgba(37,99,235,0.5)" stroke-width="0.8"/>
+<text x="60.0" y="543" fill="#2563eb" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">DOC</text>
+<text x="128.0" y="565.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">회의록 페이지</text>
+<text x="128.0" y="580.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">approved only</text>
+<text x="128.0" y="593.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">stays in ClickUp</text>
+<rect x="384" y="96" width="200" height="72" rx="6" fill="#f4f8fd"/>
+<rect x="384" y="96" width="200" height="72" rx="6" fill="rgba(27,42,65,0.05)" stroke="#46607f" stroke-width="1"/>
+<rect x="392" y="102" width="40" height="12" rx="2" fill="none" stroke="rgba(70,96,127,0.50)" stroke-width="0.8"/>
+<text x="412.0" y="111" fill="#46607f" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">VOLUME</text>
+<text x="484.0" y="133.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">recordings</text>
+<text x="484.0" y="148.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">webm · manifest.json</text>
+<text x="484.0" y="161.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">deleted after 7 days</text>
+<rect x="384" y="232" width="200" height="96" rx="6" fill="#f4f8fd"/>
+<rect x="384" y="232" width="200" height="96" rx="6" fill="rgba(27,42,65,0.05)" stroke="#46607f" stroke-width="1"/>
+<rect x="392" y="238" width="20" height="12" rx="2" fill="none" stroke="rgba(70,96,127,0.50)" stroke-width="0.8"/>
+<text x="402.0" y="247" fill="#46607f" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">DB</text>
+<text x="484.0" y="281.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">n8n 실행 기록</text>
+<text x="484.0" y="296.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">transcript · messages</text>
+<text x="484.0" y="309.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">draft · pruned at 168h</text>
+<rect x="744" y="96" width="176" height="72" rx="6" fill="#f4f8fd"/>
+<rect x="744" y="96" width="176" height="72" rx="6" fill="rgba(27,42,65,0.03)" stroke="rgba(27,42,65,0.3)" stroke-width="1"/>
+<rect x="752" y="102" width="24" height="12" rx="2" fill="none" stroke="rgba(27,42,65,0.22)" stroke-width="0.8"/>
+<text x="764.0" y="111" fill="#6f86a3" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">API</text>
+<text x="832.0" y="140.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">음성 인식</text>
+<text x="832.0" y="155.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">gpt-4o-transcribe</text>
+<rect x="744" y="232" width="176" height="96" rx="6" fill="#f4f8fd"/>
+<rect x="744" y="232" width="176" height="96" rx="6" fill="rgba(27,42,65,0.03)" stroke="rgba(27,42,65,0.3)" stroke-width="1"/>
+<rect x="752" y="238" width="24" height="12" rx="2" fill="none" stroke="rgba(27,42,65,0.22)" stroke-width="0.8"/>
+<text x="764.0" y="247" fill="#6f86a3" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">API</text>
+<text x="832.0" y="281.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">초안 작성</text>
+<text x="832.0" y="296.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">gpt-6-luna</text>
+<text x="832.0" y="309.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">store: false</text>
+<line x1="40" y1="648" x2="920" y2="648" stroke="rgba(27,42,65,0.1)" stroke-width="0.8"/>
+<text x="40" y="664" fill="#46607f" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.18em">LEGEND</text>
+<rect x="40" y="684" width="14" height="10" rx="2" fill="rgba(37,99,235,0.08)" stroke="#2563eb" stroke-width="1"/>
+<text x="60" y="692" fill="#46607f" font-size="12" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">남는 결과물</text>
+<rect x="160" y="684" width="14" height="10" rx="2" fill="rgba(27,42,65,0.05)" stroke="#46607f" stroke-width="1"/>
+<text x="180" y="692" fill="#46607f" font-size="12" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">7일 보관</text>
+<rect x="268" y="684" width="14" height="10" rx="2" fill="rgba(27,42,65,0.03)" stroke="rgba(27,42,65,0.3)" stroke-width="1"/>
+<text x="288" y="692" fill="#46607f" font-size="12" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">외부 서비스</text>
+<path d="M 392,689 H 420" fill="none" stroke="#0e7490" stroke-width="1.2" marker-end="url(#data-flow-arrow-link)"/>
+<text x="428" y="692" fill="#46607f" font-size="12" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">서버 밖으로</text>
+<path d="M 520,689 H 548" fill="none" stroke="#46607f" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#data-flow-arrow)"/>
+<text x="556" y="692" fill="#46607f" font-size="12" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">결과 수신</text>
+<path d="M 640,689 H 668" fill="none" stroke="#2563eb" stroke-width="1.4" marker-end="url(#data-flow-arrow-accent)"/>
+<text x="676" y="692" fill="#46607f" font-size="12" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">사람 승인</text>
+<path d="M 760,689 H 788" fill="none" stroke="#46607f" stroke-width="1.2" marker-end="url(#data-flow-arrow)"/>
+<text x="796" y="692" fill="#46607f" font-size="12" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">서버 안 이동</text>
+      </svg>
+    </div>
+  </div>
+</body>
+</html>

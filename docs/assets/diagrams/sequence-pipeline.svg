@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 960 772" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="sequence-pipeline-title sequence-pipeline-desc" id="sequence-pipeline-root">
+        <title id="sequence-pipeline-title">회의 종료부터 초안 게시까지</title>
+        <desc id="sequence-pipeline-desc">회의 종료 명령부터 회의 채널에 초안과 승인 버튼이 올라갈 때까지의 순서: 녹음 봇이 manifest를 보내면 n8n이 바로 응답하고, 결정 메시지 조회, 발화별 음성 인식, 템플릿 읽기, 초안 작성, 코드 근거 검증을 거친다.</desc>
+<defs>
+      <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Serif:ital@0;1&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap');
+      #sequence-pipeline-root { --color-paper:   #f4f8fd;
+      --color-ink:     #1b2a41;
+      --color-muted:   #46607f;
+      --color-accent:  #2563eb;
+      --color-link:    #0e7490;
+      --font-sans:     'Geist', 'Noto Sans KR', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', 'Noto Serif', 'Noto Serif KR', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace; }
+      #sequence-pipeline-root { font-family: var(--font-sans); color: var(--color-ink); }
+      #sequence-pipeline-root .diagram-container { width: 100%; overflow-x: auto; }
+      #sequence-pipeline-root .diagram-container { overflow-x: visible; }</style>
+<marker id="sequence-pipeline-sequence-pipeline-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#46607f"/></marker>
+<marker id="sequence-pipeline-sequence-pipeline-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2563eb"/></marker>
+<marker id="sequence-pipeline-sequence-pipeline-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#0e7490"/></marker>
+<marker id="sequence-pipeline-sequence-pipeline-arrow-soft" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#6f86a3"/></marker>
+<marker id="sequence-pipeline-sequence-pipeline-arrow-open" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polyline points="0 0, 8 3, 0 6" fill="none" stroke="#46607f" stroke-width="1.2"/></marker>
+</defs>
+<rect width="100%" height="100%" fill="#f4f8fd"/>
+<line x1="112" y1="96" x2="112" y2="688" stroke="#1b2a41" stroke-opacity="0.2" stroke-width="1" stroke-dasharray="3,3"/>
+<line x1="296" y1="96" x2="296" y2="688" stroke="#1b2a41" stroke-opacity="0.2" stroke-width="1" stroke-dasharray="3,3"/>
+<line x1="480" y1="96" x2="480" y2="688" stroke="#1b2a41" stroke-opacity="0.2" stroke-width="1" stroke-dasharray="3,3"/>
+<line x1="664" y1="96" x2="664" y2="688" stroke="#1b2a41" stroke-opacity="0.2" stroke-width="1" stroke-dasharray="3,3"/>
+<line x1="848" y1="96" x2="848" y2="688" stroke="#1b2a41" stroke-opacity="0.2" stroke-width="1" stroke-dasharray="3,3"/>
+<rect x="160" y="512" width="384" height="160" rx="4" fill="#1b2a41" fill-opacity="0.02" stroke="#1b2a41" stroke-opacity="0.22" stroke-width="1"/>
+<rect x="160" y="512" width="40" height="16" rx="2" fill="#f4f8fd" stroke="#1b2a41" stroke-opacity="0.22" stroke-width="1"/>
+<text x="180" y="524" fill="#46607f" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.12em">ALT</text>
+<text x="172" y="544" fill="#46607f" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.04em">[draftOk: true]</text>
+<text x="172" y="616" fill="#46607f" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.04em">[else]</text>
+<line x1="168" y1="596" x2="536" y2="596" stroke="#1b2a41" stroke-opacity="0.2" stroke-width="1" stroke-dasharray="4,3"/>
+<rect x="108" y="136" width="8" height="156" fill="#1b2a41" fill-opacity="0.06" stroke="#46607f" stroke-width="0.8"/>
+<rect x="476" y="220" width="8" height="444" fill="#1b2a41" fill-opacity="0.06" stroke="#46607f" stroke-width="0.8"/>
+<path d="M 292,140 H 116" fill="none" stroke="#46607f" stroke-width="1.2" marker-end="url(#sequence-pipeline-sequence-pipeline-arrow)"/>
+<path d="M 116,172 H 136 Q 144,172 144,180 V 184 Q 144,192 136,192 H 118" fill="none" stroke="#46607f" stroke-width="1.2" marker-end="url(#sequence-pipeline-sequence-pipeline-arrow)"/>
+<path d="M 116,224 H 476" fill="none" stroke="#46607f" stroke-width="1.2" marker-end="url(#sequence-pipeline-sequence-pipeline-arrow)"/>
+<path d="M 476,256 H 116" fill="none" stroke="#46607f" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#sequence-pipeline-sequence-pipeline-arrow)"/>
+<path d="M 116,288 H 292" fill="none" stroke="#46607f" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#sequence-pipeline-sequence-pipeline-arrow)"/>
+<path d="M 476,332 H 300" fill="none" stroke="#0e7490" stroke-width="1.2" marker-end="url(#sequence-pipeline-sequence-pipeline-arrow-link)"/>
+<path d="M 484,368 H 660" fill="none" stroke="#0e7490" stroke-width="1.2" marker-end="url(#sequence-pipeline-sequence-pipeline-arrow-link)"/>
+<path d="M 484,404 H 844" fill="none" stroke="#0e7490" stroke-width="1.2" marker-end="url(#sequence-pipeline-sequence-pipeline-arrow-link)"/>
+<path d="M 484,440 H 660" fill="none" stroke="#0e7490" stroke-width="1.2" marker-end="url(#sequence-pipeline-sequence-pipeline-arrow-link)"/>
+<path d="M 484,468 H 504 Q 512,468 512,476 V 480 Q 512,488 504,488 H 486" fill="none" stroke="#46607f" stroke-width="1.2" marker-end="url(#sequence-pipeline-sequence-pipeline-arrow)"/>
+<path d="M 476,572 H 300" fill="none" stroke="#2563eb" stroke-width="1.4" marker-end="url(#sequence-pipeline-sequence-pipeline-arrow-accent)"/>
+<path d="M 476,644 H 300" fill="none" stroke="#0e7490" stroke-width="1.2" marker-end="url(#sequence-pipeline-sequence-pipeline-arrow-link)"/>
+<rect x="156.0" y="118.0" width="96" height="16" rx="2" fill="#f4f8fd"/>
+<text x="204.0" y="130.0" fill="#46607f" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">/회의녹음 종료</text>
+<rect x="152.0" y="174.0" width="136" height="16" rx="2" fill="#f4f8fd"/>
+<text x="220.0" y="186.0" fill="#46607f" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">manifest.json 작성</text>
+<rect x="164.0" y="206.0" width="80" height="12" rx="2" fill="#f4f8fd"/>
+<text x="204" y="215.0" fill="#46607f" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">POST MANIFEST</text>
+<rect x="342.0" y="234.0" width="92" height="16" rx="2" fill="#f4f8fd"/>
+<text x="388" y="246.0" fill="#46607f" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">즉시 200 응답</text>
+<rect x="156.0" y="266.0" width="96" height="16" rx="2" fill="#f4f8fd"/>
+<text x="204.0" y="278.0" fill="#46607f" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">녹음 종료 안내</text>
+<rect x="334.0" y="310.0" width="108" height="16" rx="2" fill="#f4f8fd"/>
+<text x="388.0" y="322.0" fill="#0e7490" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">결정 메시지 조회</text>
+<rect x="508.0" y="346.0" width="128" height="16" rx="2" fill="#f4f8fd"/>
+<text x="572.0" y="358.0" fill="#0e7490" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">발화별 음성 인식 ×N</text>
+<rect x="696.0" y="382.0" width="120" height="16" rx="2" fill="#f4f8fd"/>
+<text x="756" y="394.0" fill="#0e7490" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">템플릿 페이지 읽기</text>
+<rect x="496.0" y="418.0" width="152" height="16" rx="2" fill="#f4f8fd"/>
+<text x="572.0" y="430.0" fill="#0e7490" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">초안 작성 · Responses</text>
+<rect x="520.0" y="470.0" width="112" height="16" rx="2" fill="#f4f8fd"/>
+<text x="576.0" y="482.0" fill="#46607f" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">근거 검증 (코드)</text>
+<rect x="310.0" y="550.0" width="156" height="16" rx="2" fill="#f0f4f9"/>
+<text x="388.0" y="562.0" fill="#2563eb" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">알림 + 초안 · 승인 버튼</text>
+<rect x="312.0" y="622.0" width="152" height="16" rx="2" fill="#f0f4f9"/>
+<text x="388.0" y="634.0" fill="#0e7490" font-size="12" font-weight="500" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">알림 (오류 종류별 개수)</text>
+<rect x="40.0" y="40" width="144" height="56" rx="6" fill="#f4f8fd"/>
+<rect x="40.0" y="40" width="144" height="56" rx="6" fill="#ffffff" stroke="#1b2a41" stroke-width="1"/>
+<text x="112.0" y="66.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">녹음 봇</text>
+<text x="112.0" y="81.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">discord.js</text>
+<rect x="224.0" y="40" width="144" height="56" rx="6" fill="#f4f8fd"/>
+<rect x="224.0" y="40" width="144" height="56" rx="6" fill="#1b2a41" fill-opacity="0.03" stroke="#1b2a41" stroke-opacity="0.3" stroke-width="1"/>
+<text x="296.0" y="66.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">회의 채널</text>
+<text x="296.0" y="81.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">Discord</text>
+<rect x="408.0" y="40" width="144" height="56" rx="6" fill="#f4f8fd"/>
+<rect x="408.0" y="40" width="144" height="56" rx="6" fill="#2563eb" fill-opacity="0.08" stroke="#2563eb" stroke-width="1"/>
+<text x="480.0" y="66.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif" text-anchor="middle">회의 녹취</text>
+<text x="480.0" y="81.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">n8n workflow</text>
+<rect x="592.0" y="40" width="144" height="56" rx="6" fill="#f4f8fd"/>
+<rect x="592.0" y="40" width="144" height="56" rx="6" fill="#1b2a41" fill-opacity="0.03" stroke="#1b2a41" stroke-opacity="0.3" stroke-width="1"/>
+<text x="664.0" y="66.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">OpenAI</text>
+<text x="664.0" y="81.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">STT · Responses</text>
+<rect x="776.0" y="40" width="144" height="56" rx="6" fill="#f4f8fd"/>
+<rect x="776.0" y="40" width="144" height="56" rx="6" fill="#1b2a41" fill-opacity="0.03" stroke="#1b2a41" stroke-opacity="0.3" stroke-width="1"/>
+<text x="848.0" y="66.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">ClickUp</text>
+<text x="848.0" y="81.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">API v3</text>
+<line x1="40" y1="704" x2="920" y2="704" stroke="#1b2a41" stroke-opacity="0.1" stroke-width="0.8"/>
+<text x="40" y="720" fill="#46607f" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.18em">LEGEND</text>
+<path d="M 40,745 H 68" fill="none" stroke="#46607f" stroke-width="1.2" marker-end="url(#sequence-pipeline-sequence-pipeline-arrow)"/>
+<text x="76" y="748" fill="#46607f" font-size="12" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">내부 호출</text>
+<path d="M 176,745 H 204" fill="none" stroke="#0e7490" stroke-width="1.2" marker-end="url(#sequence-pipeline-sequence-pipeline-arrow-link)"/>
+<text x="212" y="748" fill="#46607f" font-size="12" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">외부 API 호출</text>
+<path d="M 336,745 H 364" fill="none" stroke="#46607f" stroke-width="1" stroke-dasharray="5,4" marker-end="url(#sequence-pipeline-sequence-pipeline-arrow)"/>
+<text x="372" y="748" fill="#46607f" font-size="12" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">응답</text>
+<path d="M 440,745 H 468" fill="none" stroke="#2563eb" stroke-width="1.4" marker-end="url(#sequence-pipeline-sequence-pipeline-arrow-accent)"/>
+<text x="476" y="748" fill="#46607f" font-size="12" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">승인 대기로 가는 결과</text>
+<text x="652" y="748" fill="#46607f" font-size="12" font-family="'Geist', 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif">Wait 노드가 최대 3일 승인을 기다린다</text>
+      </svg>
