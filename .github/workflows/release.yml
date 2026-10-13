@@ -1,0 +1,167 @@
+# 릴리스와 서버 배포(설계 4절 "배포", 결정 기록 2026-10-13-gh26-ssh-push-deploy).
+#   태그 push(vX.Y.Z) → 검사 → arm64 녹음 봇 이미지(GHCR) → production 승인 → SSH 배포 → GitHub Release
+#   수동 실행(workflow_dispatch)은 이미 있는 태그를 다시 배포한다. 되돌릴 때 이전 태그를 넣는다. Release는 만들지 않는다.
+# 서버 접속 키·주소·호스트 키는 production 환경 비밀값에만 있고, 승인 뒤 deploy 작업만 읽는다.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 배포할 태그(vX.Y.Z). 되돌릴 때는 이전 태그
+        required: true
+
+permissions:
+  contents: read
+
+# 배포가 겹치지 않게 한다. 진행 중인 배포는 취소하지 않고 다음 배포가 기다린다.
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+env:
+  # 입력값을 명령에 직접 넣지 않고 환경 변수로만 쓴다(스크립트 주입 방지).
+  TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  IMAGE: ghcr.io/qello-labs/meeting-bot-recorder
+
+jobs:
+  check:
+    name: 태그 확인과 검사
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.tag.outputs.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: 태그 형식과 main 포함 여부 확인
+        id: tag
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+            echo "::error::태그 형식이 vX.Y.Z가 아닙니다"
+            exit 1
+          fi
+          sha=$(git rev-parse --verify "refs/tags/$TAG^{commit}")
+          # main에 병합된 커밋의 태그만 배포한다.
+          if ! git merge-base --is-ancestor "$sha" origin/main; then
+            echo "::error::$TAG 커밋이 main에 없습니다"
+            exit 1
+          fi
+          git checkout --quiet --detach "$sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Scan files for secrets and recordings without printing values
+        run: python scripts/preflight.py
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install ffmpeg for the recorder offline test
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Offline tests
+        run: npm test
+
+      - name: Workflow JSON matches code
+        run: node scripts/build-workflow.js --check
+
+  image:
+    name: arm64 녹음 봇 이미지
+    needs: check
+    # 서버(Oracle A1)와 같은 arm64에서 에뮬레이션 없이 빌드한다. 공개 저장소의 기본 실행기라 무료다.
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.check.outputs.sha }}
+
+      - name: GHCR 로그인
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+
+      - name: 빌드와 push(이미 있는 태그는 덮어쓰지 않음)
+        env:
+          SHA: ${{ needs.check.outputs.sha }}
+        run: |
+          if docker manifest inspect "$IMAGE:$TAG" > /dev/null 2>&1; then
+            echo "$IMAGE:$TAG 이미지가 이미 있어 다시 빌드하지 않습니다"
+            exit 0
+          fi
+          docker build \
+            --label "org.opencontainers.image.source=https://github.com/${{ github.repository }}" \
+            --label "org.opencontainers.image.revision=$SHA" \
+            --label "org.opencontainers.image.version=$TAG" \
+            -t "$IMAGE:$TAG" .
+          docker push "$IMAGE:$TAG"
+
+  deploy:
+    name: 서버 배포
+    needs: image
+    runs-on: ubuntu-latest
+    # 승인자가 승인해야 이 작업이 시작되고 비밀값을 읽는다.
+    environment: production
+    steps:
+      - name: SSH로 배포
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          umask 077
+          printf '%s\n' "$DEPLOY_SSH_KEY" > deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > known_hosts
+          set +e
+          # 서버의 command=가 이 요청만 받는다. 호스트 키가 다르면 접속하지 않는다.
+          ssh -i deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=known_hosts \
+            -o BatchMode=yes -o ConnectTimeout=20 "deploy@$DEPLOY_HOST" "deploy $TAG"
+          code=$?
+          rm -f deploy_key known_hosts
+          case $code in
+            0) echo "배포 완료: $TAG" ;;
+            75) echo "::error::회의 중이거나 다른 배포가 진행 중이라 미뤘습니다. 회의가 끝난 뒤 이 실행을 다시 돌리세요" ;;
+            1) echo "::error::배포에 실패해 이전 태그로 되돌렸습니다" ;;
+            *) echo "::error::배포에 실패했습니다(종료 코드 $code). 서버에서 확인해야 합니다" ;;
+          esac
+          exit $code
+
+  release:
+    name: GitHub Release
+    needs: deploy
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Release 만들기(PR 제목으로 노트 생성)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # 실패한 실행을 다시 돌렸을 때 이미 만든 Release는 그대로 둔다.
+          if gh release view "$TAG" --repo "$REPO" > /dev/null 2>&1; then
+            echo "$TAG Release가 이미 있습니다"
+            exit 0
+          fi
+          gh release create "$TAG" --repo "$REPO" --verify-tag --generate-notes --title "$TAG"
