@@ -151,7 +151,27 @@ n8n 화면에서 저장하면 기본값과 같은 파라미터가 JSON에서 빠
 - 실행 읽기 결과(녹취·초안 포함)가 이 워크플로의 실행 기록에도 남는다. 같은 n8n DB이고 7일 뒤 함께 지워진다.
 - 근거 검증 실패는 실행이 성공으로 끝나므로 이 워크플로가 돌지 않는다. 회의 채널 알림에 오류 종류별 개수가 간다.
 
-## 가져오기
+## 릴리스 때 자동 반영
+
+릴리스 배포(README "릴리스와 배포")가 이 폴더의 두 JSON을 서버 n8n에 반영한다(`scripts/deploy/apply-workflows.js`,
+[결정 기록](../docs/decisions/2026-10-13-gh26-workflow-api-apply.md)). n8n을 멈추지 않고 공개 API로 한다.
+
+1. 자격 증명 목록에서 이름·종류만 읽어, 노드마다 같은 종류의 자격 증명을 붙인다. 종류별로 하나가 아니면(없거나 둘 이상) 반영하지 않고 실패한다.
+2. 서버의 정의와 동작이 같으면(노드, 연결, 갈래 순서, 워크플로 설정, 자격 증명 연결) "변경 없음"으로 넘어간다.
+3. 다르면 `PUT /workflows/{id}`(지금 static data를 그대로 보냄) → `POST /workflows/{id}/activate` → 켜짐·게시 버전·자격 증명 연결을 확인한다.
+   PUT만 하면 Webhook이 옛 정의로 돌아서 activate까지 한다(n8n 2.42.6 실험).
+4. 확인에 실패하면 반영 전 정의로 되돌리고 다시 켠 뒤 실패로 끝난다.
+
+실패 알림을 먼저, 회의 녹취를 나중에 반영한다. 승인을 기다리던 실행은 실행에 저장된 옛 정의로 끝나고, 결과에 그 개수를 적는다
+(`회의 녹취: 반영 (승인 대기 실행 1개는 옛 정의로 끝남)`). 서버에서 직접 돌릴 때:
+
+```bash
+cd /opt/meeting-bot   # .env는 deploy만 읽을 수 있어 deploy로 실행한다
+sudo -u deploy bash -c 'N8N_DEPLOY_API_KEY=$(sed -n "s/^N8N_DEPLOY_API_KEY=//p" .env) docker compose run --rm --no-deps -T \
+  -e N8N_DEPLOY_API_KEY -v "$PWD/workflows:/app/workflows:ro" recorder node scripts/deploy/apply-workflows.js'
+```
+
+## 가져오기(처음 한 번, 또는 수동)
 
 가져오기와 n8n 시작을 동시에 하지 않는다. 처음 만든 DB에서 둘이 함께 마이그레이션을 돌리면 n8n이 `malformed JSON` 오류로 멈춘다
 (n8n 2.42.6에서 확인). n8n을 멈춘 상태에서 일회용 컨테이너로 가져온 뒤 n8n을 띄운다.
