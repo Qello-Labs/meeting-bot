@@ -58,12 +58,20 @@ n8n 없이 녹음만 확인할 때는 `.env`의 `MEETING_ENDED_WEBHOOK_URL`을 �
 Oracle Cloud Always Free의 Ampere A1(arm64)을 쓴다. Always Free는 홈 리전에서만 쓸 수 있고 A1은 춘천에서 만들 수 없어
 홈 리전을 서울로 고른다. 인바운드 포트는 SSH만 연다.
 
+서버에는 배포 전용 `deploy` 계정이 `/opt/meeting-bot`을 소유한다. 처음 한 번은 사람이 띄우고, 그 뒤 업데이트는 릴리스 배포로 한다(아래 "릴리스와 배포").
+
 ```bash
-git clone <저장소> && cd meeting-bot
-cp .env.example .env
-# .env에 DISCORD_TOKEN과 N8N_ENCRYPTION_KEY=<openssl rand -hex 32 결과>를 넣는다
-docker compose up -d --build
+sudo adduser --disabled-password --gecos "" deploy && sudo usermod -aG docker deploy
+sudo mkdir -p /opt/meeting-bot && sudo chown deploy:deploy /opt/meeting-bot
+sudo -u deploy git clone https://github.com/Qello-Labs/meeting-bot.git /opt/meeting-bot
+cd /opt/meeting-bot
+sudo -u deploy sh -c 'umask 077; printf "DISCORD_TOKEN=\nN8N_ENCRYPTION_KEY=%s\nN8N_DEPLOY_API_KEY=\n" "$(openssl rand -hex 32)" > .env'
+sudo -u deploy nano .env   # DISCORD_TOKEN, N8N_DEPLOY_API_KEY(n8n을 띄우고 만든 뒤) 채우기
+sudo -u deploy docker compose up -d --build
 ```
+
+`.env`에는 이 세 값만 둔다. `DISCORD_CLIENT_ID`, `DISCORD_GUILD_ID`는 슬래시 명령 등록(`npm run deploy-commands`)에만 쓰고,
+OpenAI·ClickUp 키는 n8n 자격 증명에 둔다. `RECORDER_TAG`는 릴리스 배포가 적는다.
 
 | 항목 | 설정 |
 | --- | --- |
@@ -77,6 +85,44 @@ docker compose up -d --build
 
 n8n 편집 화면을 처음 열면 관리자 계정을 만든다. n8n 2.42.6은 로그인 쿠키를 HTTPS에서만 보내지만 Chrome은 `http://localhost`를
 안전한 주소로 보기 때문에 SSH 포트 포워딩으로도 로그인된다(Chrome에서 확인).
+
+### 릴리스와 배포
+
+main에 병합해도 서버는 바뀌지 않는다. `vX.Y.Z` 태그를 올리고 `production` 환경에서 승인하면 GitHub Actions(`.github/workflows/release.yml`)가
+검사 → arm64 녹음 봇 이미지(GHCR) → 승인 → SSH 배포 → GitHub Release 순으로 진행한다. 설계와 결정은 [설계 문서 4절 "배포"](docs/design/meeting-notes.md)에 있다.
+
+```bash
+git fetch origin && git tag v1.2.3 origin/main && git push origin v1.2.3   # 그다음 Actions 화면에서 production 승인
+```
+
+| 상황 | 하는 일 |
+| --- | --- |
+| 되돌리기 | Actions → Release → Run workflow에서 이전 태그를 넣는다. Release는 새로 만들지 않는다 |
+| 회의 중(종료 코드 75) | 녹음 중이면 아무것도 바꾸지 않고 멈춘다. 회의가 끝난 뒤 실패한 실행을 다시 돌린다(Re-run) |
+| 실패(1) | 이전 태그로 되돌렸다. Actions 로그에서 원인을 본다 |
+| 실패(2 등) | 되돌리지 못했다. 서버에서 `sudo -u deploy docker compose ps`와 n8n 화면을 확인한다 |
+
+서버가 하는 일(`scripts/deploy/deploy.sh`): 회의 중이면 멈춤 → 태그 체크아웃 → `.env`의 `RECORDER_TAG` 갱신 → GHCR 이미지로 녹음 봇만 교체
+→ "준비 완료" 로그 확인 → n8n 워크플로 반영(공개 API, [workflows/README.md](workflows/README.md)) → 실패하면 이전 태그로 되돌림.
+n8n 컨테이너, `.env`의 다른 값, n8n 자격 증명은 바꾸지 않는다.
+
+처음 한 번 설정할 것:
+
+1. 진입 스크립트 설치: `sudo install -o root -g root -m 755 scripts/deploy/ssh-entry.sh /usr/local/bin/meeting-bot-deploy`
+   (이 파일을 고치면 다시 설치한다).
+2. 배포 전용 키(암호 없음)를 만들어 공개 키를 `/home/deploy/.ssh/authorized_keys`(700/600, deploy 소유)에 다음 형식으로 넣는다.
+   이 키로는 `deploy vX.Y.Z` 말고는 실행되지 않고 포트 포워딩도 막힌다.
+
+   ```
+   command="/usr/local/bin/meeting-bot-deploy",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 …
+   ```
+
+3. n8n 화면에서 배포용 API 키를 만들어(범위 `workflow:read`, `workflow:update`, `workflow:activate`, `credential:list`, `execution:list`)
+   `.env`의 `N8N_DEPLOY_API_KEY`에 넣는다. 실패 알림용 키(`execution:read`)와 따로 둔다.
+4. GitHub Settings → Environments → `production`: Required reviewers, 배포 대상은 `main` 브랜치와 `v*` 태그,
+   비밀값 `DEPLOY_SSH_KEY`(개인 키), `DEPLOY_HOST`(서버 주소), `DEPLOY_KNOWN_HOSTS`(`ssh-keyscan -t ed25519 <서버>`. 서버의
+   `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` 지문과 대조한 줄).
+5. 첫 릴리스 뒤 GHCR 패키지(`meeting-bot-recorder`)가 공개인지 확인한다. 서버는 로그인 없이 이미지를 받는다.
 
 ### 결과물
 
