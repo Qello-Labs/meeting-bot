@@ -121,8 +121,18 @@ n8n 컨테이너, `.env`의 다른 값, n8n 자격 증명은 바꾸지 않는다
    `.env`의 `N8N_DEPLOY_API_KEY`에 넣는다. 실패 알림용 키(`execution:read`)와 따로 둔다.
 4. GitHub Settings → Environments → `production`: Required reviewers, 배포 대상은 `main` 브랜치와 `v*` 태그,
    비밀값 `DEPLOY_SSH_KEY`(개인 키), `DEPLOY_HOST`(서버 주소), `DEPLOY_KNOWN_HOSTS`(`ssh-keyscan -t ed25519 <서버>`. 서버의
-   `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` 지문과 대조한 줄).
-5. 첫 릴리스 뒤 GHCR 패키지(`meeting-bot-recorder`)가 공개인지 확인한다. 서버는 로그인 없이 이미지를 받는다.
+   `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` 지문과 대조한 줄. 앞의 서버 주소를 빼면 호스트 키 확인이 실패한다).
+   설정마다 저장 버튼을 눌러야 남는다. 저장했는지 `gh api repos/Qello-Labs/meeting-bot/environments/production`으로 확인한다.
+   개인 키는 화면에 붙여 넣지 말고 파일 그대로 넣는다. 첫 줄(`-----BEGIN …`)이나 마지막 줄이 빠지면 배포 작업이
+   `Load key "deploy_key": error in libcrypto`로 실패한다(2026-10-13 겪음).
+
+   ```bash
+   gh secret set DEPLOY_SSH_KEY --env production --repo Qello-Labs/meeting-bot < ~/.ssh/meeting-bot-deploy
+   ```
+
+5. GHCR 패키지(`meeting-bot-recorder`)를 공개로 둔다. 서버는 로그인 없이 이미지를 받는다. 첫 이미지는 비공개로 만들어지고,
+   조직이 공개 패키지를 막아 두었으면 패키지 설정에서 Public을 고를 수 없다. 조직 Settings → Packages → Package creation에서
+   Public을 허용한 뒤 패키지 설정에서 바꾼다(2026-10-13 겪음). 첫 릴리스의 승인 대기 중에 바꾸면 그 릴리스부터 배포된다.
 
 ### 결과물
 

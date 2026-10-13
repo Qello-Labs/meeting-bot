@@ -115,3 +115,8 @@ npm run e2e:n8n
 - 2026-10-13 확인(5-3·5-4): 사용자가 서버 호스트 키 지문 대조, 배포용 n8n API 키(`.env`의 `N8N_DEPLOY_API_KEY`)를 마쳤다고 알렸다(대조 결과 값은 공유하지 않음).
   GitHub API로 `production` 환경을 조회했다: 배포 대상 `main` 브랜치·`v*` 태그, 비밀값 `DEPLOY_HOST`·`DEPLOY_KNOWN_HOSTS`·`DEPLOY_SSH_KEY`,
   승인자 `required_reviewers`(tkv00, prevent_self_review false). 처음 조회 때는 승인자 규칙이 없어(저장되지 않음) 다시 추가했다.
+- 2026-10-13 확인(v1.0.0, 실제 서버): `v1.0.0` 태그(main `b54078c`)를 push했다. 검사·arm64 이미지 작업이 성공하고 `production` 승인을 기다렸다.
+  GHCR 패키지가 비공개로 만들어져 로그인 없는 받기가 401·403이었다. 조직이 공개 패키지를 막아 두어 조직 설정에서 Public을 허용한 뒤 패키지를
+  공개로 바꿨다(이미지는 linux/arm64, 라벨 revision `b54078c`·version `v1.0.0` 확인). 첫 배포 시도는 `DEPLOY_SSH_KEY`에 개인 키의 첫·마지막 줄이 빠져
+  `Load key "deploy_key": error in libcrypto`로 실패했다(서버는 바뀌지 않음, 호스트 키 확인은 통과). `gh secret set … < 키 파일`로 다시 넣고 두 번째 시도를
+  승인해 성공했다: 녹음 봇 교체, 두 워크플로 "변경 없음", Release 생성. 사용자가 서버 상태 확인을 마쳤다고 알렸다.
