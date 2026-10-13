@@ -1,8 +1,14 @@
 # Oracle Always Free(Ampere A1)에서 녹음 봇과 n8n을 함께 띄운다.
 #   docker compose up -d --build
 # n8n 편집 화면은 SSH 포트 포워딩으로만 연다: ssh -L 5678:localhost:5678 <서버>
+# 서버는 릴리스 배포(scripts/deploy/deploy.sh)가 녹음 봇 이미지를 바꾼다. 폴더를 옮겨도 같은 volume을 쓰도록 프로젝트 이름을 고정한다.
+name: meeting-bot
+
 services:
   recorder:
+    # 서버: 릴리스 이미지(GHCR). 배포 스크립트가 .env의 RECORDER_TAG에 태그를 적는다.
+    # 로컬: RECORDER_TAG가 없으면 이 폴더에서 빌드한 local 이미지를 쓴다.
+    image: ghcr.io/qello-labs/meeting-bot-recorder:${RECORDER_TAG:-local}
     build: .
     restart: unless-stopped
     # .env의 다른 값이 봇 컨테이너에 들어가지 않게 필요한 값만 넘긴다.
