@@ -18,6 +18,7 @@ import { TEMPLATE } from '../test/e2e/template.js';
 import { handleApprovalButton } from '../src/approval.js';
 import { buildFailureWorkflow, buildWorkflow, credentialTypeOf } from './build-workflow.js';
 import { diffWorkflows, pickWorkflow } from './diff-workflow.js';
+import { applyWorkflows, n8nApi, readWorkflows } from './deploy/apply-workflows.js';
 
 const run = promisify(execFile);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -270,8 +271,11 @@ async function prepare() {
   return { workflow, failureWorkflow };
 }
 
-/** 소유자 계정을 만들고 실행 읽기 범위만 가진 n8n API 키를 만든다(운영에서는 사람이 화면에서 만든다). */
-async function createApiKey() {
+/**
+ * 소유자 계정을 만들고 n8n API 키 두 개를 만든다(운영에서는 사람이 화면에서 만든다).
+ * 실패 알림용은 실행 읽기만, 배포용은 워크플로 반영에 필요한 범위만 가진다(결정 기록 2026-10-13-gh26-workflow-api-apply).
+ */
+async function createApiKeys() {
   // 테스트 n8n에서만 쓰고 버리는 계정이다. 비밀번호는 실행할 때마다 만든다(n8n 규칙: 8자 이상, 숫자와 대문자 포함).
   const owner = { email: 'e2e@example.com', firstName: 'E2E', lastName: 'Owner', password: `E2e${randomUUID()}` };
   // healthz가 응답해도 잠깐 동안은 REST 경로가 등록되지 않아 404가 난다.
@@ -285,14 +289,20 @@ async function createApiKey() {
   }, 60_000);
   assert.equal(setup.status, 200, `소유자 계정 ${setup.status}`);
   const cookie = setup.headers.getSetCookie().map((c) => c.split(';')[0]).join('; ');
-  const created = await fetch(`${N8N}/rest/api-keys`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', cookie },
-    body: JSON.stringify({ label: 'e2e failure alert', expiresAt: null, scopes: ['execution:read'] }),
-  });
-  assert.equal(created.status, 200, `API 키 ${created.status}`);
-  const { data } = await created.json();
-  return data.rawApiKey ?? data.apiKey;
+  const createKey = async (label, scopes) => {
+    const created = await fetch(`${N8N}/rest/api-keys`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie },
+      body: JSON.stringify({ label, expiresAt: null, scopes }),
+    });
+    assert.equal(created.status, 200, `API 키 ${created.status}`);
+    const { data } = await created.json();
+    return data.rawApiKey ?? data.apiKey;
+  };
+  return {
+    failureKey: await createKey('e2e failure alert', ['execution:read']),
+    deployKey: await createKey('e2e deploy', ['workflow:read', 'workflow:update', 'workflow:activate', 'credential:list', 'execution:list']),
+  };
 }
 
 async function startN8n({ workflow, failureWorkflow }) {
@@ -312,9 +322,9 @@ async function startN8n({ workflow, failureWorkflow }) {
   await waitFor('mock 기동', async () => (await fetch(`${MOCK}/__requests`)).ok);
 
   // 실행 중에 가져오면 새 DB에서 깨질 수 있어 n8n을 멈추고 가져온다.
-  const apiKey = await createApiKey();
+  const { failureKey, deployKey } = await createApiKeys();
   const { id, name, data } = TEST_CREDENTIALS.httpHeaderAuth;
-  await writeFile(path.join(dir, 'import', 'api-credential.json'), JSON.stringify([{ id, name, type: 'httpHeaderAuth', data: { ...data, value: apiKey } }]));
+  await writeFile(path.join(dir, 'import', 'api-credential.json'), JSON.stringify([{ id, name, type: 'httpHeaderAuth', data: { ...data, value: failureKey } }]));
   await compose('stop', 'n8n');
   await importAll([
     ['import:credentials', '--input=/import/api-credential.json'],
@@ -322,6 +332,7 @@ async function startN8n({ workflow, failureWorkflow }) {
     ['publish:workflow', `--id=${failureWorkflow.id}`],
   ]);
   await up();
+  return deployKey;
 }
 
 /** before 뒤에 온 실패 알림을 기다려 채널과 문구를 확인하고 실행 ID를 돌려준다. */
@@ -408,7 +419,7 @@ try {
   step(`임시 폴더 ${dir}`);
   const { workflow, failureWorkflow } = await prepare();
   step('n8n에 테스트 자격 증명과 두 워크플로를 가져오고 publish. 실패 알림용 n8n API 키는 n8n을 띄운 뒤 만든다');
-  await startN8n({ workflow, failureWorkflow });
+  const deployKey = await startN8n({ workflow, failureWorkflow });
 
   step('1회차: 회의 종료 → 발화 파일 6개 읽기 → (결정 메시지 갈래, 음성 인식 갈래) → 템플릿 읽기 → 초안 작성 → 초안 검증 → 회의 채널 알림 → 초안 메시지');
   const messages = channelMessages();
@@ -733,17 +744,51 @@ try {
     assert.deepEqual(diffWorkflows(wf, exported), [], wf.name);
   }
 
+  step('15회차: 승인을 기다리는 회의가 있을 때 배포 스크립트로 저장소 워크플로를 반영한다. 기다리던 회의는 옛 정의로 끝나고, 다시 반영하면 변경 없음');
+  // 반영할 저장소 JSON은 실제 서비스 주소를 쓴다. 기다리던 회의가 옛 정의(가짜 서버 주소)로 끝나야 가짜 서버에 요청이 남는다.
+  const beforeFifteenth = (await mockRequests()).length;
+  await meetingEnded(manifest);
+  const fifteenthDraft = await waitFor('초안 메시지', async () => (await mockRequests()).slice(beforeFifteenth).find(isDraftPost));
+  const deployApi = n8nApi({ apiUrl: `${N8N}/api/v1`, apiKey: deployKey });
+  const repoWorkflows = await readWorkflows();
+  assert.deepEqual(await applyWorkflows({ api: deployApi, workflows: repoWorkflows }), [
+    '회의 녹취 실패 알림: 반영',
+    '회의 녹취: 반영 (승인 대기 실행 1개는 옛 정의로 끝남)',
+  ]);
+  // 실제 n8n이 돌려준 형식으로도 같다고 판정해야 배포마다 새 버전을 만들지 않는다.
+  assert.deepEqual(await applyWorkflows({ api: deployApi, workflows: repoWorkflows }), [
+    '회의 녹취 실패 알림: 변경 없음',
+    '회의 녹취: 변경 없음 (승인 대기 실행 1개는 옛 정의로 끝남)',
+  ]);
+  for (const wf of repoWorkflows) {
+    const live = await deployApi.call('GET', `/workflows/${wf.id}`);
+    assert.equal(live.active, true, `${wf.name} 켜짐`);
+    assert.equal(live.activeVersionId, live.versionId, `${wf.name} 게시 버전`);
+    for (const node of live.nodes.filter((n) => credentialTypeOf(n))) {
+      const type = credentialTypeOf(node);
+      assert.deepEqual(node.credentials?.[type]?.id, TEST_CREDENTIALS[type].id, `${wf.name} ${node.name} 자격 증명`);
+    }
+  }
+  assert.deepEqual(await click(buttonIds(payloadOf(fifteenthDraft).components)[0]), accepted('승인'));
+  const fifteenth = await waitFor('같은 이름 알림', async () => {
+    const requests = (await mockRequests()).slice(beforeFifteenth);
+    return requests.filter(isPatch).length >= 2 ? requests : null;
+  });
+  assert.deepEqual(fifteenth.filter(isPatch)[1].json, settled('승인(도연). ClickUp에 같은 이름(2026-10-14 정기 회의)의 페이지가 있어 쓰지 않았습니다'));
+  assert.equal(fifteenth.filter(isListing).length, 1, '기다리던 회의는 옛 정의의 가짜 ClickUp 주소로 목록을 읽는다');
+  console.log('  반영: 실패 알림, 회의 녹취(대기 실행 1개). 다시 반영: 변경 없음. 기다리던 회의는 옛 정의로 끝남');
+
   step('n8n 실행 기록 확인');
   const { executions, staticData } = await readExecutions(workflow.id);
   // 회의록을 쓴 뒤 다음 회의의 결정 메시지는 이번 회의 종료 뒤부터 모은다.
   assert.equal(staticData.global?.lastMeetingEndedAt, manifest.endedAt);
   assert.deepEqual(executions.map((e) => e.status), [
-    'success', 'error', 'error', 'error', 'success', 'error', 'error', 'success', 'error', 'error', 'error', 'success', 'success', 'error',
+    'success', 'error', 'error', 'error', 'success', 'error', 'error', 'success', 'error', 'error', 'error', 'success', 'success', 'error', 'success',
   ]);
-  const [ok, noFolder, oneMissing, badId, rejectedRun, fetchFailed, blank, badEvidence, truncated, refused, noTemplate, timedOut, duplicated, readBackFailed] =
+  const [ok, noFolder, oneMissing, badId, rejectedRun, fetchFailed, blank, badEvidence, truncated, refused, noTemplate, timedOut, duplicated, readBackFailed, appliedWhileWaiting] =
     executions.map((e) => e.data);
   assert.equal(unflatten(readBackFailed).resultData.lastNodeExecuted, '페이지 다시 읽기');
-  assert.equal(executions.at(-1).id, Number(readBackFailedId), '알림의 실행 ID가 실패한 실행이다');
+  assert.equal(executions[13].id, Number(readBackFailedId), '알림의 실행 ID가 14회차에서 실패한 실행이다');
   for (const line of [
     '[00:00:03] 참석자 2: 3초 발화',
     '[00:00:12] 도연: 12초 발화',
@@ -788,6 +833,7 @@ try {
   assert.deepEqual(outcomesOf(rejectedRun), [['reject', 'minsu', 1]]);
   assert.deepEqual(outcomesOf(timedOut), [['timeout', null, 1]]);
   assert.deepEqual(outcomesOf(duplicated), [['approve', '도연', 1]]);
+  assert.deepEqual(outcomesOf(appliedWhileWaiting), [['approve', '도연', 1]]);
   const [verified] = nodeOutput(ok, '내용 대조');
   assert.deepEqual([verified.matched, verified.differentLines], [true, 0]);
   assert.deepEqual(nodeOutput(duplicated, '내용 대조'), []);
