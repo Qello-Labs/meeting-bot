@@ -1,5 +1,5 @@
-// E2E 테스트용 가짜 OpenAI(음성 인식, Responses API), Discord, Confluence(v2 페이지 API). 워크플로가 보낸 요청을 기록하고 각 API 형태의 응답을 낸다.
-// OpenAI·Confluence는 http :8080/openai, /confluence로, Discord는 https :443(테스트 네트워크 안의 discord.com)으로 받는다. Discord 요청은 /discord/...로 기록한다.
+// E2E 테스트용 가짜 OpenAI(음성 인식, Responses API), Discord, Confluence(v2 페이지 API), Jira(이슈 검색·만들기, 보드 스프린트). 워크플로가 보낸 요청을 기록하고 각 API 형태의 응답을 낸다.
+// OpenAI·Confluence·Jira는 http :8080/openai, /confluence, /jira로, Discord는 https :443(테스트 네트워크 안의 discord.com)으로 받는다. Discord 요청은 /discord/...로 기록한다.
 //   GET  /__requests                  지금까지 받은 요청
 //   POST /__fail-next-transcription   다음 음성 인식 요청 하나에 500을 낸다(재시도 확인용)
 //   POST /__messages                  회의 채널 메시지 목록을 바꾼다(JSON 배열). 메시지 조회는 이 목록에서 after 뒤를 준다
@@ -27,6 +27,13 @@ let alterNext = false;
 let readbackFail = false;
 let templateFail = false;
 let llm = null;
+// Jira(가짜): 만든 이슈를 쌓는다. 같은 회의 레이블 검색에 나온다. 보드 1에는 파트별 스프린트가 있다.
+const issues = [];
+const SPRINTS = [
+  { id: 8, name: 'Backend·Sprint 3 (12/10–18/10)', state: 'active', startDate: '2026-10-11T15:00:00.000Z', endDate: '2026-10-18T14:59:00.000Z', originBoardId: 1 },
+  { id: 5, name: 'Android·Sprint 3 (12/10–18/10)', state: 'active', startDate: '2026-10-11T15:00:00.000Z', endDate: '2026-10-18T14:59:00.000Z', originBoardId: 1 },
+  { id: 10, name: 'Backend·Sprint 4 (19/10–25/10)', state: 'future', startDate: '2026-10-18T15:00:00.000Z', endDate: '2026-10-25T14:59:00.000Z', originBoardId: 1 },
+];
 
 function parseMultipart(buffer, contentType) {
   const boundary = /boundary=(?:"([^"]+)"|([^;]+))/.exec(contentType ?? '');
@@ -110,6 +117,25 @@ function route(req, path, query, body) {
   if (req.method === 'GET' && page) {
     if (templateFail || templateContent === null) return { status: 500, body: { errors: [{ status: 500, title: 'e2e injected failure' }] } };
     return { status: 200, body: { id: page[1], status: 'current', title: '회의록 템플릿', body: { storage: { representation: 'storage', value: templateContent } } } };
+  }
+  if (req.method === 'GET' && path === '/jira/rest/api/3/search/jql') {
+    const label = /labels = "([^"]+)"/.exec(query.jql ?? '')?.[1];
+    const found = issues.filter((i) => i.fields.labels.includes(label)).map(({ id, key, fields }) => ({ id, key, fields: { summary: fields.summary } }));
+    return { status: 200, body: { issues: found, isLast: true } };
+  }
+  if (req.method === 'GET' && path === '/jira/rest/agile/1.0/board/1/sprint') {
+    const states = String(query.state ?? '').split(',');
+    return { status: 200, body: { maxResults: 50, startAt: 0, isLast: true, values: SPRINTS.filter((s) => states.includes(s.state)) } };
+  }
+  if (req.method === 'POST' && path === '/jira/rest/api/3/issue') {
+    const fields = body.json?.fields;
+    if (fields?.project?.key !== 'SCRUM' || !fields?.summary || fields?.description?.type !== 'doc') {
+      return { status: 400, body: { errorMessages: ['e2e: unexpected create request'] } };
+    }
+    const id = String(10000 + issues.length + 1);
+    const key = `SCRUM-${issues.length + 1}`;
+    issues.push({ id, key, fields });
+    return { status: 201, body: { id, key, self: `http://mock/jira/rest/api/3/issue/${id}` } };
   }
   if (req.method === 'POST' && path === '/openai/responses') {
     if (!llm) return { status: 500, body: { error: { type: 'server_error', message: 'e2e response not set' } } };

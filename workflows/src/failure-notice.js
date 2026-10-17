@@ -1,7 +1,7 @@
 // 회의 녹취 워크플로가 실패하면 회의 채널에 보낼 알림과 초안 메시지 고치기 요청을 만든다(설계 5절 "실패 알림").
 // 실패(Error Trigger)가 주는 오류에는 요청 본문(녹취·초안), 쿼리를 포함한 주소, 사람이 쓴 글이 섞일 수 있다(n8n 2.42.6 실험).
 // 그래서 알림에는 코드가 정한 값만 넣는다: 노드 이름(워크플로에 있는 이름만), 오류 종류, 회의 ID, 실행 ID.
-// 앞에 붙는 상수: FALLBACK_CHANNEL_ID(실제 회의 채널), NODE_TYPES(회의 녹취 워크플로의 노드 이름과 종류), AFTER_WRITE(페이지 만들기와 그 뒤 노드).
+// 앞에 붙는 상수: FALLBACK_CHANNEL_ID(실제 회의 채널), NODE_TYPES(회의 녹취 워크플로의 노드 이름과 종류), AFTER_WRITE(Jira 이슈 만들기와 그 뒤 노드).
 const { execution } = $('실패').first().json;
 // 실행 읽기(n8n API)가 실패하면 오류 항목이 온다. 그때는 customData가 없으므로 고정 채널로 보낸다.
 const customData = $input.first().json?.customData ?? {};
@@ -25,7 +25,9 @@ else if (/^E[A-Z_]{2,30}$/.test(httpCode)) kind = `연결 실패(${httpCode})`;
 else if (NODE_TYPES[failedNode] === 'n8n-nodes-base.code') kind = '검사 중단';
 
 const where = failedNode ? `'${failedNode}' 단계에서` : '알 수 없는 단계에서';
-const writeCheck = AFTER_WRITE.includes(failedNode) ? ' Confluence `회의록`에 페이지가 생겼는지 확인해 주세요.' : '';
+// Jira 이슈 만들기부터는 외부에 쓴 것이 남았을 수 있다. 다시 처리하면 같은 회의 레이블과 요약이 같은 이슈는 새로 만들지 않는다.
+const label = meetingId ? `\`meeting-${meetingId}\` 레이블 ` : '';
+const writeCheck = AFTER_WRITE.includes(failedNode) ? ` Jira(${label}이슈)와 Confluence \`회의록\`에 만들어진 것이 있는지 확인해 주세요.` : '';
 const meeting = meetingId ? `회의 ${meetingId} ` : '';
 
 return [{

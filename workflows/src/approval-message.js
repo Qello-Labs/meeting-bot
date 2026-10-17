@@ -19,7 +19,7 @@ const description = attach ? chars.slice(0, EMBED_LIMIT - [...more].length).join
 
 const rev = 1;
 const payload = {
-  content: `회의 ${meeting.meetingId} 회의록 초안입니다. 3일 안에 승인 또는 거절을 눌러 주세요.`,
+  content: `회의 ${meeting.meetingId} 회의록 초안입니다. 3일 안에 승인 또는 거절을 눌러 주세요. 승인하면 Confluence에 쓰고 액션 아이템을 Jira 이슈로 만듭니다.`,
   embeds: [{ title: `회의록 초안 (${meetingDate})`, description }],
   components: approvalButtons(rev, check.draft),
   // 초안에는 녹취와 채팅 문장이 들어 있어 @everyone 같은 멘션이 울리지 않게 끈다.
