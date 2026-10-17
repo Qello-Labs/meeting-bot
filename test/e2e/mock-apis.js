@@ -1,12 +1,12 @@
-// E2E 테스트용 가짜 OpenAI(음성 인식, Responses API), Discord, ClickUp(템플릿 페이지 조회). 워크플로가 보낸 요청을 기록하고 각 API 형태의 응답을 낸다.
-// OpenAI·ClickUp은 http :8080/openai, /clickup으로, Discord는 https :443(테스트 네트워크 안의 discord.com)으로 받는다. Discord 요청은 /discord/...로 기록한다.
+// E2E 테스트용 가짜 OpenAI(음성 인식, Responses API), Discord, Confluence(v2 페이지 API). 워크플로가 보낸 요청을 기록하고 각 API 형태의 응답을 낸다.
+// OpenAI·Confluence는 http :8080/openai, /confluence로, Discord는 https :443(테스트 네트워크 안의 discord.com)으로 받는다. Discord 요청은 /discord/...로 기록한다.
 //   GET  /__requests                  지금까지 받은 요청
 //   POST /__fail-next-transcription   다음 음성 인식 요청 하나에 500을 낸다(재시도 확인용)
 //   POST /__messages                  회의 채널 메시지 목록을 바꾼다(JSON 배열). 메시지 조회는 이 목록에서 after 뒤를 준다
 //   POST /__messages-fail             메시지 조회가 계속 500을 낸다(조회 실패 확인용). /__messages로 목록을 다시 넣으면 풀린다
-//   POST /__template                  템플릿 페이지 본문을 정한다({ content }). 조회 실패도 풀린다
+//   POST /__template                  템플릿 페이지 본문(저장 형식)을 정한다({ content }). 조회 실패도 풀린다
 //   POST /__template-fail             템플릿 페이지 조회가 계속 500을 낸다
-//   POST /__minutes                   회의록 문서의 상위 페이지를 정한다({ parentPageId }). 만든 페이지는 이 아래에 쌓여 페이지 목록에 나온다
+//   POST /__minutes                   회의록 상위 페이지를 정한다({ parentPageId }). 이 페이지 아래가 아니면 만들기가 400을 낸다
 //   POST /__minutes-alter             다음에 만드는 페이지를 다시 읽을 때 본문 한 줄을 바꿔 준다(대조 확인용)
 //   POST /__minutes-clear             만든 페이지를 모두 지운다(같은 회의를 다시 쓰게 할 때)
 //   POST /__readback-fail             만든 페이지를 다시 읽으면 계속 500을 낸다(승인 뒤 실패 알림 확인용)
@@ -20,7 +20,7 @@ let failNext = 0;
 let channelMessages = [];
 let messagesFail = false;
 let templateContent = null;
-// 회의록 문서(가짜): 상위 페이지 아래에 만든 페이지를 쌓는다.
+// Qello 스페이스(가짜): 상위 페이지 아래에 만든 페이지를 쌓는다. 제목은 스페이스 안에서 겹칠 수 없다.
 let minutesParent = null;
 const createdPages = new Map();
 let alterNext = false;
@@ -73,38 +73,43 @@ function route(req, path, query, body) {
   if (req.method === 'PATCH' && message) {
     return { status: 200, body: { id: message[2], channel_id: message[1], content: body.json?.content } };
   }
-  const listing = /^\/clickup\/api\/v3\/workspaces\/([^/]+)\/docs\/([^/]+)\/page_listing$/.exec(path);
-  if (req.method === 'GET' && listing) {
-    const children = [...createdPages.values()].map(({ id, name, parent_page_id }) => ({ id, doc_id: listing[2], workspace_id: Number(listing[1]), name, parent_page_id }));
-    return {
-      status: 200,
-      body: [
-        { id: 'z8rzdfhxc8-1', doc_id: listing[2], workspace_id: Number(listing[1]), name: '안내' },
-        { id: 'z8rzdfhxc8-38', doc_id: listing[2], workspace_id: Number(listing[1]), name: '회의록', pages: minutesParent ? [
-          { id: minutesParent, doc_id: listing[2], workspace_id: Number(listing[1]), name: '회의록 테스트', parent_page_id: 'z8rzdfhxc8-38', pages: children },
-        ] : [] },
-      ],
-    };
+  const WIKI = '/confluence/wiki/api/v2';
+  if (req.method === 'GET' && path === `${WIKI}/pages`) {
+    // 제목은 정확히 같은 것만 찾는다(GET /pages?space-id&title). 스페이스에는 옮겨 온 회의록이 미리 있다.
+    const existing = [{ id: '98568', title: '2026-10-11 정기 회의', parentId: '98458', spaceId: query['space-id'] }];
+    const results = [...existing, ...createdPages.values()]
+      .filter((p) => p.title === query.title)
+      .map(({ id, title, parentId }) => ({ id, status: 'current', title, parentId, spaceId: query['space-id'] }));
+    return { status: 200, body: { results, _links: {} } };
   }
-  const create = /^\/clickup\/api\/v3\/workspaces\/([^/]+)\/docs\/([^/]+)\/pages$/.exec(path);
-  if (req.method === 'POST' && create) {
-    const id = `z8rzdfhxc8-${7000 + createdPages.size}`;
-    const { parent_page_id, name, content } = body.json ?? {};
-    // ClickUp처럼 목록 기호를 바꾸고 링크가 아닌 대괄호를 이스케이프해 저장한다(실제 ClickUp에서 확인). 대조는 이런 차이를 같은 것으로 봐야 한다.
-    let stored = String(content ?? '').replace(/^\*   /gm, '- ').replace(/(?<!\\)\[([^\]\n]*)\](?!\()/g, '\\[$1\\]');
-    if (alterNext) stored = stored.replace(/^(- .*?)\.( 이유:)/m, '$1 (바뀜).$2');
+  if (req.method === 'POST' && path === `${WIKI}/pages`) {
+    const { spaceId, title, parentId, status, body: content } = body.json ?? {};
+    if (!minutesParent || parentId !== minutesParent || status !== 'current' || content?.representation !== 'storage') {
+      return { status: 400, body: { errors: [{ status: 400, title: 'e2e: unexpected create request' }] } };
+    }
+    if ([...createdPages.values()].some((p) => p.title === title)) {
+      return { status: 400, body: { errors: [{ status: 400, title: 'A page with this title already exists' }] } };
+    }
+    const id = String(7000 + createdPages.size);
+    // Confluence처럼 저장할 때 속성과 빈 문단 표기를 바꾼다. 대조는 이런 차이를 같은 것으로 봐야 한다.
+    let stored = String(content.value)
+      .replace(/<table>/g, '<table data-layout="default" ac:local-id="e2e"><colgroup><col /></colgroup>')
+      .replace(/<p><\/p>/g, '<p />')
+      .replace(/<h2>/g, '<h2 ac:local-id="e2e">');
+    if (alterNext) stored = stored.replace(/(<li><p>[^<]*?)\.( 이유:)/, '$1 (바뀜).$2');
     alterNext = false;
-    createdPages.set(id, { id, name, parent_page_id, content: stored });
-    return { status: 201, body: { id, doc_id: create[2], workspace_id: Number(create[1]), name, parent_page_id, content: stored } };
+    createdPages.set(id, { id, title, parentId, spaceId, storage: stored });
+    return { status: 200, body: { id, status: 'current', title, spaceId, parentId, parentType: 'page', version: { number: 1 } } };
   }
-  const page = /^\/clickup\/api\/v3\/workspaces\/([^/]+)\/docs\/([^/]+)\/pages\/([^/]+)$/.exec(path);
-  if (req.method === 'GET' && page && createdPages.has(page[3])) {
-    if (readbackFail) return { status: 500, body: { err: 'e2e injected failure' } };
-    return { status: 200, body: { ...createdPages.get(page[3]), doc_id: page[2], workspace_id: Number(page[1]) } };
+  const page = new RegExp(`^${WIKI}/pages/(\\d+)$`).exec(path);
+  if (req.method === 'GET' && page && createdPages.has(page[1])) {
+    if (readbackFail) return { status: 500, body: { errors: [{ status: 500, title: 'e2e injected failure' }] } };
+    const { id, title, parentId, spaceId, storage } = createdPages.get(page[1]);
+    return { status: 200, body: { id, status: 'current', title, parentId, spaceId, body: { storage: { representation: 'storage', value: storage } } } };
   }
   if (req.method === 'GET' && page) {
-    if (templateFail || templateContent === null) return { status: 500, body: { err: 'e2e injected failure' } };
-    return { status: 200, body: { id: page[3], doc_id: page[2], workspace_id: page[1], name: '회의록 템플릿', content: templateContent } };
+    if (templateFail || templateContent === null) return { status: 500, body: { errors: [{ status: 500, title: 'e2e injected failure' }] } };
+    return { status: 200, body: { id: page[1], status: 'current', title: '회의록 템플릿', body: { storage: { representation: 'storage', value: templateContent } } } };
   }
   if (req.method === 'POST' && path === '/openai/responses') {
     if (!llm) return { status: 500, body: { error: { type: 'server_error', message: 'e2e response not set' } } };
