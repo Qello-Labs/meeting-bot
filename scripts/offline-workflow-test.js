@@ -199,7 +199,8 @@ for (const [label, body, expected] of [
   assert.equal(nodeOf('회의 채널 알림').type, 'n8n-nodes-base.discord');
   assert.deepEqual(workflow.nodes.map(credentialTypeOf).filter(Boolean), [
     'discordBotApi', 'openAiApi', 'httpBasicAuth', 'openAiApi', 'discordBotApi', 'discordBotApi', 'discordBotApi',
-    'discordBotApi', 'discordBotApi', 'httpBasicAuth', 'httpBasicAuth', 'httpBasicAuth', 'discordBotApi', 'discordBotApi',
+    'discordBotApi', 'discordBotApi', 'httpBasicAuth', 'httpBasicAuth', 'httpBasicAuth', 'httpBasicAuth', 'httpBasicAuth',
+    'httpBasicAuth', 'discordBotApi', 'discordBotApi',
   ]);
   assert.deepEqual(
     workflow.nodes.map((n) => n.name),
@@ -209,7 +210,8 @@ for (const [label, body, expected] of [
       '녹취·결정 합치기', '템플릿 읽기', '초안 요청 만들기', '초안 작성', '초안 검증', '알림 만들기', '회의 채널 알림',
       '초안 메시지 만들기', '긴 초안 확인', '초안 보내기(첨부)', '초안 보내기', '승인 기다리기', '결정 읽기', '기한 초과 확인',
       '결정 응답', '승인·거절 확인', '수정 확인', '수정 반영 만들기', '수정 반영', '결과 표시', '쓰기 준비', '같은 제목 찾기',
-      '쓰기 판단', '같은 이름 확인', '페이지 만들기', '페이지 다시 읽기', '내용 대조', '쓰기 결과 표시',
+      '쓰기 판단', '같은 이름 확인', '액션 아이템 고르기', '같은 회의 이슈 찾기', '스프린트 읽기', '이슈 요청 만들기', '새 이슈 확인',
+      'Jira 이슈 만들기', '회의록에 이슈 채우기', '페이지 만들기', '페이지 다시 읽기', '내용 대조', '쓰기 결과 표시',
       '기한 초과 알림 만들기', '기한 초과 알림',
     ],
   );
@@ -959,7 +961,7 @@ await assert.rejects(decide(resumed(null)), /알 수 없는 결정/);
   assert.ok(!result.edited.draft.includes('\r'));
   const [made] = await h.code('수정 반영 만들기', '수정 확인');
   assert.deepEqual([made.json.rev, made.json.draft, made.json.textChannelId, made.json.messageId], [2, result.edited.draft, CHANNEL, MESSAGE_ID]);
-  assert.equal(made.json.body.content, '회의 20261014-1400 회의록 초안입니다(수정: 민수). 3일 안에 승인 또는 거절을 눌러 주세요.');
+  assert.equal(made.json.body.content, '회의 20261014-1400 회의록 초안입니다(수정: 민수). 3일 안에 승인 또는 거절을 눌러 주세요. 승인하면 Confluence에 쓰고 액션 아이템을 Jira 이슈로 만듭니다.');
   assert.deepEqual(made.json.body.embeds, [{ title: '회의록 초안 (2026-10-14)', description: result.edited.draft }]);
   assert.deepEqual(buttonsOf(made.json.body.components), [['승인', idOf('approve', 2)], ['수정', idOf('edit', 2)], ['거절', idOf('reject', 2)]]);
   assert.deepEqual(made.json.body.allowed_mentions, { parse: [] });
@@ -1054,16 +1056,140 @@ async function dedupe(response) {
 await assert.rejects(dedupe({}), /results가 없습니다/);
 await assert.rejects(dedupe({ results: 'x' }), /results가 없습니다/);
 
+// ---------------------------------------------------------------------------
+// 액션 아이템을 Jira 이슈로(#32). 이슈 키, 스프린트, 날짜는 지어낸 값이다.
+// ---------------------------------------------------------------------------
+
+const SITE = 'https://tkv123.atlassian.net';
+/** 보드 1의 진행 중·예정 스프린트(GET /rest/agile/1.0/board/1/sprint). 시각은 UTC이고 한국 날짜로 비교한다. */
+const SPRINTS = {
+  values: [
+    { id: 8, name: 'Backend·Sprint 3 (12/10–18/10)', state: 'active', startDate: '2026-10-11T15:00:00.000Z', endDate: '2026-10-18T14:59:00.000Z' },
+    { id: 9, name: 'Frontend·Sprint 3 (12/10–18/10)', state: 'active', startDate: '2026-10-11T15:00:00.000Z', endDate: '2026-10-18T14:59:00.000Z' },
+    { id: 10, name: 'Backend·Sprint 4 (19/10–25/10)', state: 'future', startDate: '2026-10-18T15:00:00.000Z', endDate: '2026-10-25T14:59:00.000Z' },
+    { id: 2, name: 'SCRUM Sprint 0', state: 'active', startDate: '2026-10-16T00:00:00.000Z', endDate: '2026-10-30T00:00:00.000Z' },
+    { id: 7, name: 'Backend·Sprint 2', state: 'closed', startDate: '2026-10-04T15:00:00.000Z', endDate: '2026-10-11T14:59:00.000Z' },
+  ],
+};
+const ACTION_DRAFT = GOOD_DRAFT.replace(
+  /\| Backend \| 도연 \| 배포 \| 금요일 \| 없음 \|\n\| Frontend \| 참석자 2 \| 화면 확인 \| 2026-10-16 \| 없음 \|/,
+  [
+    '| Backend | 도연 | 배포 | 2026-10-20 |  |',
+    '| Frontend | 참석자 2 | 화면 확인 | 2026-10-16 |  |',
+    '| Backend | 도연 | 로그 정리 |  | 없음 |',
+    '| Android | 참석자 2 | 앱 \\| 화면 | 2026-10-16 | [SCRUM-77](https://tkv123.atlassian.net/browse/SCRUM-77) |',
+    '| Backend | 도연 | 없음 |  |  |',
+  ].join('\n'),
+);
+assert.notEqual(ACTION_DRAFT, GOOD_DRAFT);
+
+/** 쓰기 준비 뒤 Jira 갈래를 돌린다. created는 만들기 요청 순서대로 낼 응답, null이면 만들기 노드가 돌지 않은 것이다. */
+async function jiraFlow(draft, { found = { issues: [] }, sprints = SPRINTS, created, staticData = {} } = {}) {
+  const { h } = await prepareWrite(draft, { staticData });
+  const [picked] = await h.code('액션 아이템 고르기', '쓰기 판단');
+  h.set('같은 회의 이슈 찾기', [{ json: found }]);
+  h.set('스프린트 읽기', [{ json: sprints }]);
+  const requests = await h.code('이슈 요청 만들기', '스프린트 읽기');
+  const toCreate = requests.filter((r) => r.json.create);
+  if (toCreate.length) {
+    const responses = created ?? toCreate.map((_, i) => ({ id: String(10100 + i), key: `SCRUM-${101 + i}`, self: 'x' }));
+    h.set('Jira 이슈 만들기', responses.map((json) => ({ json })));
+  }
+  const [filled] = await h.code('회의록에 이슈 채우기', toCreate.length ? 'Jira 이슈 만들기' : '이슈 요청 만들기');
+  return { h, picked: picked.json, requests: requests.map((r) => r.json), filled: filled.json };
+}
+
+// 할 일이 있는 행만 고른다. 이슈 칸에 이미 키가 있으면 새로 만들지 않는다. 같은 회의를 찾는 JQL에 회의 레이블을 쓴다.
+{
+  const { picked, requests, filled } = await jiraFlow(ACTION_DRAFT);
+  assert.equal(picked.jql, 'project = SCRUM AND labels = "meeting-20261014-1400" ORDER BY created ASC');
+  assert.deepEqual(picked.rows.map((r) => [r.part, r.owner, r.task, r.due, r.existingKey]), [
+    ['Backend', '도연', '배포', '2026-10-20', null],
+    ['Frontend', '참석자 2', '화면 확인', '2026-10-16', null],
+    ['Backend', '도연', '로그 정리', null, null],
+    ['Android', '참석자 2', '앱 | 화면', '2026-10-16', 'SCRUM-77'],
+  ]);
+  // 기한이 든 파트 스프린트(예정 스프린트 포함)에 넣고, 기한이 없거나 맞는 스프린트가 없으면 백로그에 둔다.
+  assert.deepEqual(requests.map((r) => [r.create, r.row, r.request.fields.summary, r.request.fields.duedate, r.request.fields.customfield_10020]), [
+    [true, 0, '배포', '2026-10-20', 10],
+    [true, 1, '화면 확인', '2026-10-16', 9],
+    [true, 2, '로그 정리', undefined, undefined],
+  ]);
+  const [first] = requests;
+  assert.deepEqual(first.request.fields.project, { key: 'SCRUM' });
+  assert.deepEqual(first.request.fields.issuetype, { id: '10003' });
+  assert.deepEqual(first.request.fields.labels, ['meeting-minutes', 'meeting-20261014-1400']);
+  assert.equal(first.request.fields.assignee, undefined, '담당자는 Jira 계정을 찾지 않고 비운다');
+  assert.equal(first.request.fields.description.type, 'doc');
+  assert.deepEqual(first.request.fields.description.content.map((p) => p.content[0].text), [
+    '회의록: 2026-10-14 정기 회의 (Confluence 회의록)', '담당 파트: Backend', '담당자(회의록 기준): 도연', 'meeting-bot이 승인된 회의록(회의 20261014-1400)에서 만들었습니다.',
+  ]);
+  // 만든 이슈와 이미 있던 키를 이슈 칸에 링크로 채우고, Confluence 요청 본문도 채운 회의록으로 다시 만든다.
+  const lines = filled.content.split('\n');
+  assert.ok(lines.includes(`| Backend | 도연 | 배포 | 2026-10-20 | [SCRUM-101](${SITE}/browse/SCRUM-101) |`));
+  assert.ok(lines.includes(`| Frontend | 참석자 2 | 화면 확인 | 2026-10-16 | [SCRUM-102](${SITE}/browse/SCRUM-102) |`));
+  assert.ok(lines.includes(`| Backend | 도연 | 로그 정리 |  | [SCRUM-103](${SITE}/browse/SCRUM-103) |`));
+  assert.ok(lines.includes(`| Android | 참석자 2 | 앱 \\| 화면 | 2026-10-16 | [SCRUM-77](${SITE}/browse/SCRUM-77) |`));
+  assert.ok(lines.includes('| Backend | 도연 | 없음 |  |  |'), '할 일이 없음인 행은 그대로 둔다');
+  assert.deepEqual(filled.request.body, { representation: 'storage', value: markdownToStorage(filled.content) });
+  assert.deepEqual([filled.request.title, filled.request.parentId, filled.name], ['2026-10-14 정기 회의', PARENT, '2026-10-14 정기 회의']);
+  assert.deepEqual(filled.jira, { rows: 4, created: ['SCRUM-101', 'SCRUM-102', 'SCRUM-103'], reused: ['SCRUM-77'], backlog: 1, filled: true });
+}
+
+// 같은 회의 레이블 이슈 중 요약이 같은 것은 다시 만들지 않는다(다시 처리할 때). 모두 있으면 만들기를 건너뛴다.
+{
+  const found = { issues: [{ key: 'SCRUM-90', fields: { summary: '배포' } }, { key: 'SCRUM-91', fields: { summary: '화면 확인' } }] };
+  const some = await jiraFlow(ACTION_DRAFT, { found });
+  assert.deepEqual(some.requests.map((r) => r.request.fields.summary), ['로그 정리']);
+  assert.deepEqual(some.filled.jira.created, ['SCRUM-101']);
+  assert.deepEqual(some.filled.jira.reused, ['SCRUM-90', 'SCRUM-91', 'SCRUM-77']);
+  const all = await jiraFlow(ACTION_DRAFT, { found: { issues: [...found.issues, { key: 'SCRUM-92', fields: { summary: '로그 정리' } }] } });
+  assert.deepEqual(all.requests.map((r) => r.create), [false], '만들 것이 없으면 새 이슈 확인이 건너뛰게 한 항목만 낸다');
+  assert.ok(all.filled.content.includes(`[SCRUM-92](${SITE}/browse/SCRUM-92)`));
+  assert.deepEqual(all.filled.jira.created, []);
+}
+
+// 액션 아이템이 없으면(할 일이 모두 비었거나 없음) 이슈를 만들지 않고 본문을 그대로 쓴다.
+{
+  const { requests, filled } = await jiraFlow(GOOD_DRAFT.replace('| Backend | 도연 | 배포 |', '| Backend | 도연 | 없음 |').replace('| 화면 확인 |', '| - |'));
+  assert.deepEqual(requests, [{ create: false, plans: [] }]);
+  assert.equal(filled.jira.rows, 0);
+  assert.equal(filled.content, GOOD_DRAFT.replace('| Backend | 도연 | 배포 |', '| Backend | 도연 | 없음 |').replace('| 화면 확인 |', '| - |'));
+}
+
+// 같은 파트의 스프린트가 둘 이상 기한을 덮거나, 파트 이름으로 시작하는 스프린트가 없으면 백로그에 둔다.
+{
+  const overlap = { values: [...SPRINTS.values, { id: 11, name: 'Backend·Sprint 3b', state: 'active', startDate: '2026-10-15T00:00:00.000Z', endDate: '2026-10-22T00:00:00.000Z' }] };
+  const { requests, filled } = await jiraFlow(ACTION_DRAFT, { sprints: overlap });
+  assert.equal(requests[0].request.fields.customfield_10020, undefined);
+  assert.equal(filled.jira.backlog, 2);
+}
+
+// 이슈 칸이 없는 표(템플릿 머리글이 다름)면 이슈는 만들되 회의록에는 채우지 못했다고 알린다.
+{
+  const noColumn = ACTION_DRAFT.replace('| 담당 파트 | 담당자 | 할 일 | 기한 | Jira 이슈 |', '| 담당 파트 | 담당자 | 할 일 | 기한 | 비고 |');
+  const { filled } = await jiraFlow(noColumn);
+  assert.equal(filled.jira.filled, false);
+  assert.equal(filled.content, noColumn);
+}
+
+// 검색·스프린트 응답 형식이 다르거나, 만들기 응답이 요청과 맞지 않으면 어느 행의 이슈인지 알 수 없으므로 멈춘다.
+await assert.rejects(jiraFlow(ACTION_DRAFT, { found: {} }), /issues가 없습니다/);
+await assert.rejects(jiraFlow(ACTION_DRAFT, { sprints: {} }), /values가 없습니다/);
+await assert.rejects(jiraFlow(ACTION_DRAFT, { created: [{ key: 'SCRUM-101' }] }), /요청 3개, 응답 1개/);
+await assert.rejects(jiraFlow(ACTION_DRAFT, { created: [{ key: 'SCRUM-101' }, { key: 'OTHER-1' }, { key: 'SCRUM-103' }] }), /맞지 않습니다/);
+
 /** 내용 대조: 만든 페이지를 다시 읽은 결과로 대조하고 지난 회의 끝 시각을 갱신한다. */
-async function verify(readBack, staticData = {}, { attendees } = {}) {
-  const draft = attendees ? GOOD_DRAFT.replace('| 참석자 | 도연 |', attendees) : GOOD_DRAFT;
-  const { h, items } = await prepareWrite(draft, { staticData });
-  const [prepared] = items;
-  h.set('페이지 만들기', [{ json: { id: '7001', title: prepared.json.name, parentId: PARENT } }]);
-  h.set('페이지 다시 읽기', [{ json: { id: '7001', title: prepared.json.name, parentId: PARENT, ...readBack(prepared.json.request.body.value) } }]);
+async function verify(readBack, staticData = {}, { attendees, draft: base = GOOD_DRAFT } = {}) {
+  const draft = attendees ? base.replace('| 참석자 | 도연 |', attendees) : base;
+  const { h, filled } = await jiraFlow(draft, { staticData });
+  h.set('페이지 만들기', [{ json: { id: '7001', title: filled.name, parentId: PARENT } }]);
+  h.set('페이지 다시 읽기', [{ json: { id: '7001', title: filled.name, parentId: PARENT, ...readBack(filled.request.body.value) } }]);
   const [result] = await h.code('내용 대조', '페이지 다시 읽기');
   return result.json;
 }
+/** 쓰기 결과 메시지. GOOD_DRAFT는 할 일 2개다. 기한이 금요일(날짜 아님)인 배포는 백로그, 화면 확인은 Frontend 스프린트에 들어간다. */
+const JIRA_LINE = '\nJira: 이슈 2개를 만들었습니다(SCRUM-101, SCRUM-102), 1개는 맞는 스프린트가 없어 백로그에 있습니다';
 const stored = (value) => ({ body: { storage: { representation: 'storage', value } } });
 const PAGE_LINK = 'https://tkv123.atlassian.net/wiki/spaces/SCRUM/pages/7001';
 
@@ -1077,7 +1203,8 @@ const PAGE_LINK = 'https://tkv123.atlassian.net/wiki/spaces/SCRUM/pages/7001';
     .replace(/, /g, '&#44; ')}`), staticData, { attendees: '| 참석자 | 도연, 참석자 2 [15기] |' });
   assert.deepEqual([result.matched, result.differentLines, result.nameOk, result.parentOk], [true, 0, true, true]);
   assert.equal(result.link, PAGE_LINK);
-  assert.deepEqual(result.body, settled(`승인(도연). Confluence에 썼습니다: ${PAGE_LINK}`));
+  assert.deepEqual(result.body, settled(`승인(도연). Confluence에 썼습니다: ${PAGE_LINK}${JIRA_LINE}`));
+  assert.deepEqual(result.jira.created, ['SCRUM-101', 'SCRUM-102']);
   assert.equal(staticData.lastMeetingEndedAt, manifest.endedAt);
 }
 
@@ -1086,11 +1213,17 @@ const PAGE_LINK = 'https://tkv123.atlassian.net/wiki/spaces/SCRUM/pages/7001';
   const staticData = {};
   const changed = await verify((value) => stored(value.replace('배포는 금요일에 한다.', '배포는 토요일에 한다.')), staticData);
   assert.deepEqual([changed.matched, changed.differentLines], [false, 2]);
-  assert.deepEqual(changed.body, settled(`승인(도연). Confluence에 썼지만 다시 읽은 내용이 달라 확인이 필요합니다(본문 2줄): ${PAGE_LINK}`));
+  assert.deepEqual(changed.body, settled(`승인(도연). Confluence에 썼지만 다시 읽은 내용이 달라 확인이 필요합니다(본문 2줄): ${PAGE_LINK}${JIRA_LINE}`));
   assert.equal(staticData.lastMeetingEndedAt, manifest.endedAt);
   const moved = await verify(() => ({ title: '다른 제목', parentId: '98458', ...stored('') }));
   assert.equal(moved.matched, false);
   assert.match(moved.body.content, /확인이 필요합니다\(제목, 상위 페이지, 본문 \d+줄\)/);
+  // 이슈 키를 채운 표도 저장 형식으로 바꿨다가 다시 읽으면 같다. 이미 있던 이슈는 따로 알린다.
+  const linked = await verify((value) => stored(value), {}, { draft: ACTION_DRAFT });
+  assert.equal(linked.matched, true);
+  assert.ok(linked.body.content.endsWith('\nJira: 이슈 3개를 만들었습니다(SCRUM-101, SCRUM-102, SCRUM-103), 이미 있던 이슈 1개를 연결했습니다(SCRUM-77), 1개는 맞는 스프린트가 없어 백로그에 있습니다'));
+  const none = await verify((value) => stored(value), {}, { draft: GOOD_DRAFT.replace('| 배포 |', '| 없음 |').replace('| 화면 확인 |', '| 없음 |') });
+  assert.ok(none.body.content.endsWith('\n액션 아이템이 없어 Jira 이슈는 만들지 않았습니다'));
 }
 
 // 노드 설정: 결정 읽기 뒤 갈래와 다시 기다리는 연결, 응답 노드, Confluence 요청.
@@ -1115,7 +1248,14 @@ const PAGE_LINK = 'https://tkv123.atlassian.net/wiki/spaces/SCRUM/pages/7001';
   assert.deepEqual(outputs('쓰기 준비'), [[link('같은 제목 찾기')]]);
   assert.deepEqual(outputs('같은 제목 찾기'), [[link('쓰기 판단')]]);
   assert.deepEqual(outputs('쓰기 판단'), [[link('같은 이름 확인')]]);
-  assert.deepEqual(outputs('같은 이름 확인'), [[link('쓰기 결과 표시')], [link('페이지 만들기')]]);
+  assert.deepEqual(outputs('같은 이름 확인'), [[link('쓰기 결과 표시')], [link('액션 아이템 고르기')]]);
+  assert.deepEqual(outputs('액션 아이템 고르기'), [[link('같은 회의 이슈 찾기')]]);
+  assert.deepEqual(outputs('같은 회의 이슈 찾기'), [[link('스프린트 읽기')]]);
+  assert.deepEqual(outputs('스프린트 읽기'), [[link('이슈 요청 만들기')]]);
+  assert.deepEqual(outputs('이슈 요청 만들기'), [[link('새 이슈 확인')]]);
+  assert.deepEqual(outputs('새 이슈 확인'), [[link('Jira 이슈 만들기')], [link('회의록에 이슈 채우기')]]);
+  assert.deepEqual(outputs('Jira 이슈 만들기'), [[link('회의록에 이슈 채우기')]]);
+  assert.deepEqual(outputs('회의록에 이슈 채우기'), [[link('페이지 만들기')]]);
   assert.deepEqual(outputs('페이지 만들기'), [[link('페이지 다시 읽기')]]);
   assert.deepEqual(outputs('페이지 다시 읽기'), [[link('내용 대조')]]);
   assert.deepEqual(outputs('내용 대조'), [[link('쓰기 결과 표시')]]);
@@ -1128,6 +1268,7 @@ const PAGE_LINK = 'https://tkv123.atlassian.net/wiki/spaces/SCRUM/pages/7001';
   assert.deepEqual(condition('승인·거절 확인'), [["={{ ['approve', 'reject'].includes($json.outcome) }}", isTrue]]);
   assert.deepEqual(condition('수정 확인'), [["={{ $json.outcome === 'edited' }}", isTrue]]);
   assert.deepEqual(condition('같은 이름 확인'), [['={{ $json.duplicate }}', isTrue]]);
+  assert.deepEqual(condition('새 이슈 확인'), [['={{ $json.create }}', isTrue]]);
 
   const url = '=https://discord.com/api/v10/channels/{{ $json.textChannelId }}/messages';
   const attached = nodeOf('초안 보내기(첨부)');
@@ -1145,7 +1286,7 @@ const PAGE_LINK = 'https://tkv123.atlassian.net/wiki/spaces/SCRUM/pages/7001';
     assert.equal(nodeOf(name).retryOnFail, true, `${name}은 같은 내용으로 고치는 것이라 다시 보낸다`);
   }
   // 다시 보내면 메시지나 페이지가 두 개 생길 수 있는 요청은 재시도하지 않는다.
-  for (const name of ['초안 보내기(첨부)', '초안 보내기', '기한 초과 알림', '페이지 만들기']) {
+  for (const name of ['초안 보내기(첨부)', '초안 보내기', '기한 초과 알림', 'Jira 이슈 만들기', '페이지 만들기']) {
     assert.equal(nodeOf(name).retryOnFail, undefined, `${name}은 다시 보내지 않는다`);
   }
 
@@ -1163,7 +1304,7 @@ const PAGE_LINK = 'https://tkv123.atlassian.net/wiki/spaces/SCRUM/pages/7001';
   assert.deepEqual([shortWait.resumeAmount, shortWait.resumeUnit], [15, 'seconds']);
 
   const wiki = 'https://tkv123.atlassian.net/wiki/api/v2';
-  for (const name of ['같은 제목 찾기', '페이지 만들기', '페이지 다시 읽기']) {
+  for (const name of ['같은 제목 찾기', '페이지 만들기', '페이지 다시 읽기', '같은 회의 이슈 찾기', '스프린트 읽기', 'Jira 이슈 만들기']) {
     assert.deepEqual([nodeOf(name).parameters.authentication, credentialTypeOf(nodeOf(name))], ['genericCredentialType', 'httpBasicAuth'], name);
   }
   const search = nodeOf('같은 제목 찾기');
@@ -1177,13 +1318,29 @@ const PAGE_LINK = 'https://tkv123.atlassian.net/wiki/spaces/SCRUM/pages/7001';
   assert.deepEqual(readBack.parameters.queryParameters.parameters, [{ name: 'body-format', value: 'storage' }]);
   assert.equal(readBack.retryOnFail, true);
 
+  // Jira: 같은 사이트와 자격 증명. 읽기는 다시 시도하고 만들기는 다시 보내지 않는다.
+  const issueSearch = nodeOf('같은 회의 이슈 찾기');
+  assert.deepEqual([issueSearch.parameters.method, issueSearch.parameters.url, issueSearch.retryOnFail], ['GET', `${SITE}/rest/api/3/search/jql`, true]);
+  assert.deepEqual(issueSearch.parameters.queryParameters.parameters, [
+    { name: 'jql', value: '={{ $json.jql }}' }, { name: 'fields', value: 'summary' }, { name: 'maxResults', value: '100' },
+  ]);
+  const sprintNode = nodeOf('스프린트 읽기');
+  assert.deepEqual([sprintNode.parameters.method, sprintNode.parameters.url, sprintNode.retryOnFail], ['GET', `${SITE}/rest/agile/1.0/board/1/sprint`, true]);
+  assert.deepEqual(sprintNode.parameters.queryParameters.parameters, [{ name: 'state', value: 'active,future' }, { name: 'maxResults', value: '50' }]);
+  const issue = nodeOf('Jira 이슈 만들기');
+  assert.deepEqual([issue.parameters.method, issue.parameters.url, issue.parameters.jsonBody], ['POST', `${SITE}/rest/api/3/issue`, '={{ JSON.stringify($json.request) }}']);
+  const jiraConstants = 'const JIRA = {"site":"https://tkv123.atlassian.net","projectKey":"SCRUM","boardId":"1","issueTypeId":"10003","sprintField":"customfield_10020"};';
+  for (const name of ['액션 아이템 고르기', '이슈 요청 만들기', '회의록에 이슈 채우기']) assert.ok(nodeOf(name).parameters.jsCode.startsWith(jiraConstants), name);
+  const localJira = await buildWorkflow({ jiraBase: 'http://mock/jira' });
+  assert.equal(localJira.nodes.find((n) => n.name === 'Jira 이슈 만들기').parameters.url, 'http://mock/jira/rest/api/3/issue');
+
   // 사이트·스페이스·상위 페이지 ID는 빌드 상수(`회의록` 페이지)이고, 상위 페이지는 빌드 옵션으로 바꿀 수 있다(E2E와 테스트).
   const constants = '{"site":"https://tkv123.atlassian.net","spaceId":"98307","spaceKey":"SCRUM","parentPageId":"98458"}';
   for (const name of ['쓰기 준비', '내용 대조']) assert.ok(nodeOf(name).parameters.jsCode.startsWith(`const CONFLUENCE = ${constants};`), name);
   assert.ok(minutesWorkflow.nodes.find((n) => n.name === '내용 대조').parameters.jsCode.includes(`"parentPageId":"${PARENT}"`));
   // 템플릿 읽기·쓰기 준비·내용 대조는 같은 변환 코드(shared/confluence-format.js)를 쓴다.
   const format = await readFile(new URL('../workflows/src/shared/confluence-format.js', import.meta.url), 'utf8');
-  for (const name of ['초안 요청 만들기', '쓰기 준비', '내용 대조']) assert.ok(nodeOf(name).parameters.jsCode.includes(format), `${name}에 같은 변환 코드가 있다`);
+  for (const name of ['초안 요청 만들기', '쓰기 준비', '회의록에 이슈 채우기', '내용 대조']) assert.ok(nodeOf(name).parameters.jsCode.includes(format), `${name}에 같은 변환 코드가 있다`);
   // 수정 검증과 초안 검증은 같은 규칙 코드(shared/draft-rules.js)를 쓴다.
   const rules = await readFile(new URL('../workflows/src/shared/draft-rules.js', import.meta.url), 'utf8');
   for (const name of ['초안 검증', '결정 읽기']) assert.ok(nodeOf(name).parameters.jsCode.includes(rules), `${name}에 같은 검증 규칙이 있다`);
@@ -1283,18 +1440,18 @@ for (const [trigger, kind] of [
   assert.equal(json.notice.content, '회의 20261014-1400 회의록 처리가 알 수 없는 단계에서 실패했습니다. 오류: 기타 오류. n8n 실행 알 수 없음에서 확인해 주세요.');
 }
 
-// 승인 뒤 페이지 만들기와 그 뒤에서 실패하면 Confluence 확인을 덧붙이고, 초안 메시지를 실패로 고친다(버튼을 지운다).
-for (const node of ['페이지 만들기', '페이지 다시 읽기', '내용 대조', '쓰기 결과 표시']) {
+// 승인 뒤 Jira 이슈 만들기와 그 뒤에서 실패하면 Jira·Confluence 확인을 덧붙이고, 초안 메시지를 실패로 고친다(버튼을 지운다).
+for (const node of ['Jira 이슈 만들기', '회의록에 이슈 채우기', '페이지 만들기', '페이지 다시 읽기', '내용 대조', '쓰기 결과 표시']) {
   const json = await notify(failed({ node, httpCode: '500' }), readOf({ meetingId: '20261014-1400', textChannelId: CHANNEL, draftMessageId: MESSAGE_ID }));
-  const check = ' Confluence `회의록`에 페이지가 생겼는지 확인해 주세요.';
+  const check = ' Jira(`meeting-20261014-1400` 레이블 이슈)와 Confluence `회의록`에 만들어진 것이 있는지 확인해 주세요.';
   assert.equal(json.notice.content, `회의 20261014-1400 회의록 처리가 '${node}' 단계에서 실패했습니다. 오류: 외부 서비스 응답 오류(HTTP 500). n8n 실행 123에서 확인해 주세요.${check}`);
   assert.equal(json.draftMessageId, MESSAGE_ID);
   assert.deepEqual(json.draftEdit, { content: `회의 20261014-1400 회의록 초안: 처리 중 실패했습니다(n8n 실행 123).${check}`, components: [], allowed_mentions: { parse: [] } });
 }
 
-// 승인 뒤라도 페이지 만들기 전(쓰기 판단 등)에 실패하면 Confluence 확인은 덧붙이지 않는다.
-{
-  const json = await notify(failed({ node: '같은 제목 찾기', httpCode: '500' }), readOf({ meetingId: '20261014-1400', textChannelId: CHANNEL, draftMessageId: MESSAGE_ID }));
+// 승인 뒤라도 이슈 만들기 전(같은 제목 찾기, 스프린트 읽기 등)에 실패하면 확인 문구는 덧붙이지 않는다.
+for (const node of ['같은 제목 찾기', '스프린트 읽기']) {
+  const json = await notify(failed({ node, httpCode: '500' }), readOf({ meetingId: '20261014-1400', textChannelId: CHANNEL, draftMessageId: MESSAGE_ID }));
   assert.ok(!json.notice.content.includes('Confluence'));
   assert.equal(json.draftEdit.content, '회의 20261014-1400 회의록 초안: 처리 중 실패했습니다(n8n 실행 123).');
 }

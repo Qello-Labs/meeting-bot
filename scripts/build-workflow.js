@@ -26,6 +26,10 @@ const TEMPLATE_PAGE = '294915'; // `회의록 템플릿`
 // 승인된 회의록을 쓰는 곳(설계 5절 H). Team Docs > `회의록` 페이지 바로 아래에 쓴다. 비어 있으면 쓰기 준비 노드가 실패해 아무것도 쓰지 않는다.
 const MINUTES_PARENT_PAGE = '98458'; // `회의록`
 
+// 승인된 회의록의 액션 아이템을 Jira 이슈로 만든다(#32, 결정 기록 2026-10-17-gh32-jira-action-items). Confluence와 같은 사이트·자격 증명이다.
+// Qello 프로젝트(SCRUM)의 `작업` 이슈 유형, 보드 1의 스프린트, 스프린트 필드(customfield_10020)는 코드 상수다.
+const JIRA = { site: ATLASSIAN_SITE, projectKey: 'SCRUM', boardId: '1', issueTypeId: '10003', sprintField: 'customfield_10020' };
+
 // 실패 알림(설계 5절 "실패 알림"). 실패한 실행을 n8n 컨테이너 안에서 n8n API로 읽는다. 회의 채널을 모르면 실제 회의 채널로 보낸다
 // (2026-10-11 사용자 결정, 채널 ID는 코드 상수).
 const N8N_API_BASE = 'http://127.0.0.1:5678/api/v1';
@@ -94,14 +98,21 @@ const POSITIONS = {
   '같은 제목 찾기': [6000, -240],
   '쓰기 판단': [6240, -240],
   '같은 이름 확인': [6480, -240],
-  '페이지 만들기': [6720, -180],
-  '페이지 다시 읽기': [6960, -180],
-  '내용 대조': [7200, -180],
-  '쓰기 결과 표시': [7440, -240],
+  '액션 아이템 고르기': [6720, -180],
+  '같은 회의 이슈 찾기': [6960, -180],
+  '스프린트 읽기': [7200, -180],
+  '이슈 요청 만들기': [7440, -180],
+  '새 이슈 확인': [7680, -180],
+  'Jira 이슈 만들기': [7920, -120],
+  '회의록에 이슈 채우기': [8160, -180],
+  '페이지 만들기': [8400, -180],
+  '페이지 다시 읽기': [8640, -180],
+  '내용 대조': [8880, -180],
+  '쓰기 결과 표시': [9120, -240],
 };
 
-// 페이지 만들기와 그 뒤 노드. 여기서 실패하면 Confluence에 페이지가 생겼을 수 있다(페이지 만들기는 재시도하지 않는다).
-const AFTER_WRITE = ['페이지 만들기', '페이지 다시 읽기', '내용 대조', '쓰기 결과 표시'];
+// Jira 이슈 만들기와 그 뒤 노드. 여기서 실패하면 Jira에 이슈가, Confluence에 페이지가 생겼을 수 있다(둘 다 재시도하지 않는다).
+const AFTER_WRITE = ['Jira 이슈 만들기', '회의록에 이슈 채우기', '페이지 만들기', '페이지 다시 읽기', '내용 대조', '쓰기 결과 표시'];
 
 const FAILURE_POSITIONS = {
   '실패': [0, 0],
@@ -165,7 +176,16 @@ const EDGES = [
   ['같은 제목 찾기', '쓰기 판단'],
   ['쓰기 판단', '같은 이름 확인'],
   ['같은 이름 확인', '쓰기 결과 표시', 0, 0],
-  ['같은 이름 확인', '페이지 만들기', 0, 1],
+  ['같은 이름 확인', '액션 아이템 고르기', 0, 1],
+  ['액션 아이템 고르기', '같은 회의 이슈 찾기'],
+  ['같은 회의 이슈 찾기', '스프린트 읽기'],
+  ['스프린트 읽기', '이슈 요청 만들기'],
+  ['이슈 요청 만들기', '새 이슈 확인'],
+  // 만들 이슈가 있으면 만든 뒤, 없으면 바로 회의록에 키를 채운다.
+  ['새 이슈 확인', 'Jira 이슈 만들기', 0, 0],
+  ['새 이슈 확인', '회의록에 이슈 채우기', 0, 1],
+  ['Jira 이슈 만들기', '회의록에 이슈 채우기'],
+  ['회의록에 이슈 채우기', '페이지 만들기'],
   ['페이지 만들기', '페이지 다시 읽기'],
   ['페이지 다시 읽기', '내용 대조'],
   ['내용 대조', '쓰기 결과 표시'],
@@ -223,10 +243,12 @@ const ifNode = (name, expression, id) => ({
 export async function buildWorkflow({
   openaiBase = OPENAI_BASE,
   confluenceBase = CONFLUENCE_BASE,
+  jiraBase = JIRA.site,
   approvalWait = APPROVAL_WAIT,
   minutesParentPage = MINUTES_PARENT_PAGE,
 } = {}) {
   const confluence = `const CONFLUENCE = ${JSON.stringify({ site: ATLASSIAN_SITE, spaceId: CONFLUENCE_SPACE.id, spaceKey: CONFLUENCE_SPACE.key, parentPageId: minutesParentPage })};`;
+  const jira = `const JIRA = ${JSON.stringify(JIRA)};`;
   const discordPatch = (name) => http(
     name,
     {
@@ -453,6 +475,49 @@ export async function buildWorkflow({
     ),
     code('쓰기 판단', await readCode('minutes-dedupe')),
     ifNode('같은 이름 확인', '$json.duplicate', '5e0f7a3c-1d2b-4c8e-9f60-2a1b3c4d5e04'),
+    code('액션 아이템 고르기', `${jira}\n${await readCode('jira-pick')}`),
+    http(
+      '같은 회의 이슈 찾기',
+      {
+        method: 'GET',
+        url: `${jiraBase}/rest/api/3/search/jql`,
+        ...basicAuth,
+        sendQuery: true,
+        queryParameters: {
+          parameters: [
+            { name: 'jql', value: '={{ $json.jql }}' },
+            { name: 'fields', value: 'summary' },
+            { name: 'maxResults', value: '100' },
+          ],
+        },
+      },
+      // 읽기라 다시 보내도 안전하다. 3번 모두 실패하면 이슈를 만들지 않고 실행을 실패시킨다.
+      { retryOnFail: true, maxTries: 3, waitBetweenTries: 5000 },
+    ),
+    http(
+      '스프린트 읽기',
+      {
+        method: 'GET',
+        url: `${jiraBase}/rest/agile/1.0/board/${JIRA.boardId}/sprint`,
+        ...basicAuth,
+        sendQuery: true,
+        queryParameters: { parameters: [{ name: 'state', value: 'active,future' }, { name: 'maxResults', value: '50' }] },
+      },
+      { retryOnFail: true, maxTries: 3, waitBetweenTries: 5000 },
+    ),
+    code('이슈 요청 만들기', `${jira}\n${await readCode('jira-request')}`),
+    ifNode('새 이슈 확인', '$json.create', '5e0f7a3c-1d2b-4c8e-9f60-2a1b3c4d5e05'),
+    // 이슈 만들기는 재시도하지 않는다. 응답을 못 받고 다시 보내면 같은 이슈가 두 개 생길 수 있다.
+    // 다시 처리할 때는 같은 회의 레이블과 요약으로 이미 있는 이슈를 찾아 새로 만들지 않는다.
+    http('Jira 이슈 만들기', {
+      method: 'POST',
+      url: `${jiraBase}/rest/api/3/issue`,
+      ...basicAuth,
+      sendBody: true,
+      specifyBody: 'json',
+      jsonBody: '={{ JSON.stringify($json.request) }}',
+    }),
+    code('회의록에 이슈 채우기', await withShared('jira-fill', ['confluence-format'], jira)),
     // 쓰기 요청은 재시도하지 않는다. 응답을 못 받고 다시 보내면 같은 제목 오류로 실패하거나 페이지가 남을 수 있다(설계 5절 H).
     http('페이지 만들기', {
       method: 'POST',
