@@ -15,7 +15,7 @@ return [{
     textChannelId: decision.textChannelId,
     messageId: decision.messageId,
     body: {
-      content: `회의 ${meeting.meetingId} 회의록 초안입니다(수정: ${decision.by}). 3일 안에 승인 또는 거절을 눌러 주세요.`,
+      content: `회의 ${meeting.meetingId} 회의록 초안입니다(수정: ${decision.by}). 3일 안에 승인 또는 거절을 눌러 주세요. 승인하면 Confluence에 쓰고 액션 아이템을 Jira 이슈로 만듭니다.`,
       embeds: [{ title: `회의록 초안 (${meetingDate})`, description: draft }],
       components: approvalButtons(rev, draft),
       allowed_mentions: { parse: [] },
