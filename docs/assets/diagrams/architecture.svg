@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg viewBox="0 0 960 632" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="architecture-title architecture-desc" id="architecture-root">
         <title id="architecture-title">meeting-bot 시스템 구성</title>
-        <desc id="architecture-desc">녹음 봇과 n8n이 Oracle A1 서버의 Docker compose 안에서 recordings 볼륨을 공유하고, Discord에서 음성과 반응·버튼을 받아 OpenAI로 녹취와 초안을 만든 뒤 승인된 회의록을 ClickUp에 쓰는 구성.</desc>
+        <desc id="architecture-desc">녹음 봇과 n8n이 Oracle A1 서버의 Docker compose 안에서 recordings 볼륨을 공유하고, Discord에서 음성과 반응·버튼을 받아 OpenAI로 녹취와 초안을 만든 뒤 승인된 회의록을 Confluence에 쓰는 구성.</desc>
 <defs>
       <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Serif:ital@0;1&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap');
       #architecture-root { --color-paper:   #f4f8fd;
@@ -117,8 +117,8 @@
 <rect x="768" y="440" width="152" height="72" rx="6" fill="#1b2a41" fill-opacity="0.03" stroke="#1b2a41" stroke-opacity="0.3" stroke-width="1"/>
 <rect x="776" y="446" width="24" height="12" rx="2" fill="none" stroke="#1b2a41" stroke-opacity="0.22" stroke-width="0.8"/>
 <text x="788.0" y="455" fill="#6f86a3" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">API</text>
-<text x="844.0" y="477.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">ClickUp</text>
-<text x="844.0" y="492.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">API v3 · text/md</text>
+<text x="844.0" y="477.0" fill="#1b2a41" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Confluence</text>
+<text x="844.0" y="492.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">API v2 · storage</text>
 <text x="844.0" y="505.0" fill="#46607f" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">minutes page</text>
 <line x1="40" y1="568" x2="920" y2="568" stroke="#1b2a41" stroke-opacity="0.1" stroke-width="0.8"/>
 <text x="40" y="584" fill="#46607f" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.18em">LEGEND</text>
