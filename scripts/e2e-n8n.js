@@ -1,4 +1,4 @@
-// 실제 n8n(2.42.6)에 회의 녹취 워크플로를 가져와 가짜 OpenAI·Discord·Confluence 서버를 상대로 끝까지 돌린다.
+// 실제 n8n(2.42.6)에 회의 녹취 워크플로를 가져와 가짜 OpenAI·Discord·Confluence·Jira 서버를 상대로 끝까지 돌린다.
 // 외부 API는 부르지 않아 비용이 들지 않는다. Docker가 필요하다. 녹음 파일은 내용 없는 가짜 webm이다.
 //   node scripts/e2e-n8n.js          실행 후 컨테이너를 내리고 임시 폴더를 지운다
 //   node scripts/e2e-n8n.js --keep   실패 원인을 보려고 컨테이너와 임시 폴더를 남긴다
@@ -129,6 +129,10 @@ const isSearch = (r) => r.method === 'GET' && r.path === `${WIKI}/pages`;
 const isCreate = (r) => r.method === 'POST' && r.path === `${WIKI}/pages`;
 const isReadBack = (r) => r.method === 'GET' && /^\/confluence\/wiki\/api\/v2\/pages\/7\d{3}$/.test(r.path);
 const TEMPLATE_PAGE = /^\/confluence\/wiki\/api\/v2\/pages\/294915$/;
+const isJira = (method, tail) => (r) => r.method === method && r.path === `/jira${tail}`;
+const isIssueSearch = isJira('GET', '/rest/api/3/search/jql');
+const isSprints = isJira('GET', '/rest/agile/1.0/board/1/sprint');
+const isIssueCreate = isJira('POST', '/rest/api/3/issue');
 const ATLASSIAN_AUTH = `Basic ${Buffer.from('e2e@example.com:dummy-e2e-atlassian').toString('base64')}`;
 const DRAFT = /^\/openai\/responses$/;
 
@@ -253,6 +257,7 @@ async function prepare() {
   const workflow = await buildWorkflow({
     openaiBase: 'http://mock:8080/openai',
     confluenceBase: 'http://mock:8080/confluence/wiki/api/v2',
+    jiraBase: 'http://mock:8080/jira',
     approvalWait: { amount: 30, unit: 'seconds' },
     minutesParentPage: MINUTES_PARENT,
   });
@@ -343,7 +348,7 @@ async function failureNotice(before, { node, kind, channel = CHANNEL, meetingId 
   assert.deepEqual(Object.keys(notice.json).sort(), ['allowed_mentions', 'content']);
   assert.deepEqual(notice.json.allowed_mentions, { parse: [] });
   const meeting = meetingId ? `회의 ${meetingId} ` : '';
-  const check = written ? ' Confluence `회의록`에 페이지가 생겼는지 확인해 주세요.' : '';
+  const check = written ? ` Jira(\`meeting-${meetingId}\` 레이블 이슈)와 Confluence \`회의록\`에 만들어진 것이 있는지 확인해 주세요.` : '';
   const text = `${meeting}회의록 처리가 '${node}' 단계에서 실패했습니다. 오류: ${kind}. n8n 실행 `;
   assert.ok(notice.json.content.startsWith(text), `${notice.json.content}`);
   const executionId = notice.json.content.slice(text.length).match(/^(\d+)에서 확인해 주세요\./)?.[1];
@@ -488,7 +493,7 @@ try {
   assert.equal(draftPost.authorization, 'Bot dummy-e2e-discord');
   assert.equal(draftPost.multipart, undefined, '4,096자 이하는 파일 없이 JSON으로 보낸다');
   const payload = payloadOf(draftPost);
-  assert.equal(payload.content, '회의 20261014-1400 회의록 초안입니다. 3일 안에 승인 또는 거절을 눌러 주세요.');
+  assert.equal(payload.content, '회의 20261014-1400 회의록 초안입니다. 3일 안에 승인 또는 거절을 눌러 주세요. 승인하면 Confluence에 쓰고 액션 아이템을 Jira 이슈로 만듭니다.');
   assert.deepEqual(payload.allowed_mentions, { parse: [] });
   assert.ok(payload.embeds[0].description.includes('| 참석자 | 도연, 참석자 2 |'));
   const [approveId, editId, rejectId] = buttonIds(payload.components);
@@ -517,14 +522,14 @@ try {
   const edited = original.replace('배포는 금요일에 한다.', '배포는 [금요일] 오후에 한다.');
   assert.deepEqual(await click(editId, { globalName: '민수' }, { submit: edited }), accepted('수정'));
   const editPatch = await waitFor('수정 반영', async () => (await mockRequests()).find(isPatch));
-  assert.equal(editPatch.json.content, '회의 20261014-1400 회의록 초안입니다(수정: 민수). 3일 안에 승인 또는 거절을 눌러 주세요.');
+  assert.equal(editPatch.json.content, '회의 20261014-1400 회의록 초안입니다(수정: 민수). 3일 안에 승인 또는 거절을 눌러 주세요. 승인하면 Confluence에 쓰고 액션 아이템을 Jira 이슈로 만듭니다.');
   assert.equal(editPatch.json.embeds[0].description, edited);
   assert.deepEqual(editPatch.json.allowed_mentions, { parse: [] });
   const [approve2, edit2, reject2] = buttonIds(editPatch.json.components);
   assert.match(approve2, /^mb:approve:\d+:2:[0-9a-f]{64}$/);
   assert.match(edit2, /^mb:edit:\d+:2:[0-9a-f]{64}$/);
 
-  step('1회차 늦은 클릭: 1판 버튼은 반영되지 않고, 2판 승인으로 Confluence 테스트 페이지 아래에 쓰고 대조한다');
+  step('1회차 늦은 클릭: 1판 버튼은 반영되지 않고, 2판 승인으로 액션 아이템을 Jira 이슈로 만든 뒤 Confluence 테스트 페이지 아래에 쓰고 대조한다');
   assert.deepEqual(await click(approveId), ['그 사이 초안이 바뀌었습니다. 회의 채널의 최신 초안 메시지에서 다시 눌러 주세요.']);
   await sleep(1_500);
   assert.equal((await mockRequests()).filter(isPatch).length, 1, '1판 승인은 메시지를 바꾸지 않는다');
@@ -546,8 +551,19 @@ try {
   assert.ok(createCall.json.body.value.includes('<li><p>배포는 [금요일] 오후에 한다.'), '고친 초안을 저장 형식으로 쓴다');
   assert.ok(createCall.json.body.value.startsWith('<table><tbody><tr><th><p>필드</p></th>'), '표 첫 행은 머리글이다');
   assert.equal(written.filter(isReadBack).length, 1);
+  // 액션 아이템 1개(Backend, 기한 2026-10-16)를 Backend 진행 중 스프린트에 이슈로 만들고, 회의록 표에 링크를 채운 뒤 쓴다.
+  assert.deepEqual([written.filter(isIssueSearch).length, written.filter(isSprints).length], [1, 1]);
+  assert.equal(written.find(isIssueSearch).query.jql, 'project = SCRUM AND labels = "meeting-20261014-1400" ORDER BY created ASC');
+  const issueCalls = written.filter(isIssueCreate);
+  assert.equal(issueCalls.length, 1);
+  assert.equal(issueCalls[0].authorization, ATLASSIAN_AUTH);
+  const fields = issueCalls[0].json.fields;
+  assert.deepEqual([fields.summary, fields.duedate, fields.customfield_10020, fields.labels], ['배포', '2026-10-16', 8, ['meeting-minutes', 'meeting-20261014-1400']]);
+  assert.ok(written.indexOf(issueCalls[0]) < written.indexOf(createCall), '이슈를 만든 뒤 회의록을 쓴다');
+  assert.ok(createCall.json.body.value.includes('<a href="https://tkv123.atlassian.net/browse/SCRUM-1">SCRUM-1</a>'), '회의록 표에 이슈 링크를 채운다');
   const pageLink = 'https://tkv123.atlassian.net/wiki/spaces/SCRUM/pages/7000';
-  assert.deepEqual(writtenPatch.json, settled(`승인(도연). Confluence에 썼습니다: ${pageLink}`), 'Confluence가 붙인 속성 차이는 같은 것으로 본다');
+  assert.deepEqual(writtenPatch.json, settled(`승인(도연). Confluence에 썼습니다: ${pageLink}\nJira: 이슈 1개를 만들었습니다(SCRUM-1)`),
+    'Confluence가 붙인 속성 차이는 같은 것으로 본다');
   assert.ok(written.indexOf(approvedPatch) < written.indexOf(createCall), '승인을 표시한 뒤 쓴다');
   assert.deepEqual(await click(reject2), INVALID_BUTTON, '끝난 실행(409)');
   await sleep(1_500);
@@ -717,8 +733,9 @@ try {
   assert.deepEqual(thirteenth.filter(isPatch)[1].json, settled('승인(도연). Confluence에 같은 제목(2026-10-14 정기 회의)의 페이지가 있어 쓰지 않았습니다'));
   assert.equal(thirteenth.filter(isSearch).length, 1);
   assert.equal(thirteenth.filter(isCreate).length, 0, '같은 제목이 있으면 쓰지 않는다');
+  assert.equal(thirteenth.filter(isIssueCreate).length, 0, '같은 제목이 있으면 Jira 이슈도 만들지 않는다');
 
-  step('14회차: 승인 뒤 페이지를 다시 읽지 못하면(500) 실행이 실패하고, 실패 알림이 Confluence 확인을 알린 뒤 초안 메시지를 실패로 고친다');
+  step('14회차: 승인 뒤 페이지를 다시 읽지 못하면(500) 실행이 실패하고, 실패 알림이 Jira·Confluence 확인을 알린 뒤 초안 메시지를 실패로 고친다. 이미 만든 Jira 이슈는 다시 만들지 않는다');
   // 재개된 실행이 실패해도 실패 알림이 돌고, 기다리기 전에 적은 customData가 남는지 확인한다(설계 5절 "실패 알림").
   await post('__minutes-clear');
   await post('__readback-fail');
@@ -736,7 +753,11 @@ try {
   const [approvedFourteenth, failedPatch] = fourteenth.filter(isPatch);
   assert.deepEqual(approvedFourteenth.json, settled('승인(도연). Confluence에 쓰는 중입니다'));
   assert.equal(failedPatch.path, approvedFourteenth.path, '같은 초안 메시지를 고친다');
-  assert.deepEqual(failedPatch.json, settled(`처리 중 실패했습니다(n8n 실행 ${readBackFailedId}). Confluence \`회의록\`에 페이지가 생겼는지 확인해 주세요.`));
+  assert.deepEqual(failedPatch.json, settled(`처리 중 실패했습니다(n8n 실행 ${readBackFailedId}). Jira(\`meeting-20261014-1400\` 레이블 이슈)와 Confluence \`회의록\`에 만들어진 것이 있는지 확인해 주세요.`));
+  // 같은 회의를 다시 처리했으므로 1회차에 만든 이슈(같은 레이블, 같은 요약)를 다시 쓰고 새로 만들지 않는다.
+  assert.equal(fourteenth.filter(isIssueSearch).length, 1);
+  assert.equal(fourteenth.filter(isIssueCreate).length, 0, '이미 있는 이슈는 다시 만들지 않는다');
+  assert.ok(fourteenth.find(isCreate).json.body.value.includes('/browse/SCRUM-1"'), '이미 있던 이슈 링크를 채운다');
   assert.ok(fourteenth.indexOf(fourteenth.find(isFailureNotice)) < fourteenth.indexOf(failedPatch), '알림을 먼저 보낸다');
   assert.equal(fourteenth.filter(isCreate).length, 1);
   assert.equal(fourteenth.filter((r) => isReadBack(r) && r.status === 500).length, 3, '다시 읽기는 노드 재시도로 3번 요청한다');
