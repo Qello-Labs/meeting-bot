@@ -62,7 +62,7 @@ body:
       value: |
         녹음·녹취 데이터 처리: 해당 없음
         외부 API 전송(음성 인식, 생성 모델): 해당 없음
-        외부 서비스 쓰기(ClickUp, Discord): 해당 없음
+        외부 서비스 쓰기(Confluence, Jira, Discord): 해당 없음
         서버·n8n 설정: 해당 없음
         API 호출량·비용: 해당 없음
     validations:
@@ -73,7 +73,7 @@ body:
     attributes:
       label: 관련 작업·결정 기록·PR
       value: |
-        관련 ClickUp 작업·회의록: 해당 없음
+        관련 Jira 이슈·회의록: 해당 없음
         결정 기록: 해당 없음
         GitHub PR: 미정
     validations:

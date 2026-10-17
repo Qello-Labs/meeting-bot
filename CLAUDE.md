@@ -44,7 +44,7 @@
 
 - `.env`, `.env.*`, `secrets/`, `recordings/`를 읽지 않는다. `.claude/settings.json`에서 차단한다.
 - Docker volume을 지우는 명령은 사람의 확인 없이 실행하지 않는다. `.claude/settings.json`에서 차단한다.
-- ClickUp, Discord, GitHub 등 외부 서비스에 쓰는 MCP 도구는 사람이 요청한 경우에만 호출한다.
+- Confluence, Jira, Discord, GitHub 등 외부 서비스에 쓰는 MCP 도구는 사람이 요청한 경우에만 호출한다.
 - `AGENTS.md`, `CLAUDE.md`, `.claude/**`는 사람의 승인 후에만 수정한다.
 
 ## 모델 선택
