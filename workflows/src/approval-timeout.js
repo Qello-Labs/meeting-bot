@@ -7,7 +7,7 @@ return [{
   json: {
     textChannelId: result.textChannelId,
     body: {
-      content: `회의 ${meeting.meetingId} 회의록 초안을 3일 동안 아무도 승인하거나 거절하지 않아 ClickUp에 쓰지 않았습니다.`,
+      content: `회의 ${meeting.meetingId} 회의록 초안을 3일 동안 아무도 승인하거나 거절하지 않아 Confluence에 쓰지 않았습니다.`,
       message_reference: { message_id: result.messageId, fail_if_not_exists: false },
       allowed_mentions: { parse: [], replied_user: false },
     },

@@ -7,10 +7,12 @@ const meeting = $('녹음 정보 확인').first().json;
 const transcript = $('녹취 만들기').first().json;
 const picked = $('결정 메시지 고르기').first().json;
 
-// ClickUp v3 페이지 조회 응답의 content가 템플릿 Markdown이다(content_format=text/md).
+// Confluence v2 페이지 조회 응답의 body.storage.value가 템플릿 저장 형식(XHTML)이다(body-format=storage).
+// shared/confluence-format.js의 storageToMarkdown으로 Markdown으로 바꿔 초안 작성과 근거 검증이 지금처럼 Markdown을 다루게 한다.
 const page = $input.first().json;
-const template = typeof page?.content === 'string' ? page.content.trim() : '';
-if (template === '') throw new Error('ClickUp 템플릿 페이지 응답에 Markdown 본문(content)이 없습니다');
+const storage = page?.body?.storage?.value;
+const template = typeof storage === 'string' ? storageToMarkdown(storage).trim() : '';
+if (template === '') throw new Error('Confluence 템플릿 페이지 응답에 본문(body.storage)이 없습니다');
 
 // 회의 시작 시각의 한국 날짜. 초안 검증이 일시 칸을 이 값으로 덮어쓴다.
 const meetingDate = new Date(Date.parse(meeting.startedAt) + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);

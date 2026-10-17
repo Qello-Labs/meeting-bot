@@ -25,7 +25,7 @@ else if (/^E[A-Z_]{2,30}$/.test(httpCode)) kind = `연결 실패(${httpCode})`;
 else if (NODE_TYPES[failedNode] === 'n8n-nodes-base.code') kind = '검사 중단';
 
 const where = failedNode ? `'${failedNode}' 단계에서` : '알 수 없는 단계에서';
-const clickupCheck = AFTER_WRITE.includes(failedNode) ? ' ClickUp `회의록`에 페이지가 생겼는지 확인해 주세요.' : '';
+const writeCheck = AFTER_WRITE.includes(failedNode) ? ' Confluence `회의록`에 페이지가 생겼는지 확인해 주세요.' : '';
 const meeting = meetingId ? `회의 ${meetingId} ` : '';
 
 return [{
@@ -33,13 +33,13 @@ return [{
     channelId,
     draftMessageId,
     notice: {
-      content: `${meeting}회의록 처리가 ${where} 실패했습니다. 오류: ${kind}. n8n 실행 ${executionId}에서 확인해 주세요.${clickupCheck}`,
+      content: `${meeting}회의록 처리가 ${where} 실패했습니다. 오류: ${kind}. n8n 실행 ${executionId}에서 확인해 주세요.${writeCheck}`,
       allowed_mentions: { parse: [] },
     },
     // 끝난 실행의 버튼은 n8n이 409로 거절하므로 지운다. 초안 메시지는 회의 채널에 있으므로 회의 채널을 알 때만 고친다.
     draftEdit: draftMessageId && meetingId && meetingChannelId
       ? {
-        content: `회의 ${meetingId} 회의록 초안: 처리 중 실패했습니다(n8n 실행 ${executionId}).${clickupCheck}`,
+        content: `회의 ${meetingId} 회의록 초안: 처리 중 실패했습니다(n8n 실행 ${executionId}).${writeCheck}`,
         components: [],
         allowed_mentions: { parse: [] },
       }

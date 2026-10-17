@@ -126,7 +126,7 @@ for (const [action, label] of [['approve', '승인'], ['reject', '거절']]) {
 for (const embed of [null, '가'.repeat(4001)]) {
   const n8n = fakeN8n();
   const { interaction } = await act({ customId: idOf('edit'), embed }, n8n);
-  assert.deepEqual(interaction.log, [['reply', { content: '이 초안은 모달로 고칠 수 없습니다. 승인한 뒤 ClickUp에서 고쳐 주세요.', flags: MessageFlags.Ephemeral }]]);
+  assert.deepEqual(interaction.log, [['reply', { content: '이 초안은 모달로 고칠 수 없습니다. 승인한 뒤 Confluence에서 고쳐 주세요.', flags: MessageFlags.Ephemeral }]]);
   assert.equal(n8n.calls.length, 0);
 }
 

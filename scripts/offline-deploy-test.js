@@ -10,7 +10,7 @@ const [failure, transcribe] = repo;
 const CREDENTIALS = [
   { id: 'cDiscord', name: 'Discord Bot', type: 'discordBotApi' },
   { id: 'cOpenAi', name: 'OpenAI', type: 'openAiApi' },
-  { id: 'cClickUp', name: 'ClickUp', type: 'clickUpApi' },
+  { id: 'cAtlassian', name: 'Atlassian', type: 'httpBasicAuth' },
   { id: 'cHeader', name: 'n8n API', type: 'httpHeaderAuth' },
 ];
 const STATIC = { global: { lastMeetingEndedAt: '2026-10-14T05:10:00.000Z' } };

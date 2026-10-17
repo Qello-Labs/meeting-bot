@@ -70,7 +70,7 @@ export async function handleApprovalButton(interaction, { webhookUrl, fetch = gl
   if (isButton && button.action === 'edit') {
     const draft = interaction.message?.embeds?.[0]?.description ?? '';
     if (draft === '' || [...draft].length > EDIT_LIMIT) {
-      await interaction.reply({ content: '이 초안은 모달로 고칠 수 없습니다. 승인한 뒤 ClickUp에서 고쳐 주세요.', flags: MessageFlags.Ephemeral });
+      await interaction.reply({ content: '이 초안은 모달로 고칠 수 없습니다. 승인한 뒤 Confluence에서 고쳐 주세요.', flags: MessageFlags.Ephemeral });
       return true;
     }
     await interaction.showModal(editModal(interaction.customId, draft));
