@@ -14,16 +14,17 @@ const FAILURE_WORKFLOW_ID = 'MeetingFailAlert';
 
 const OPENAI_BASE = 'https://api.openai.com/v1';
 const DISCORD_BASE = 'https://discord.com/api/v10';
-const CLICKUP_BASE = 'https://api.clickup.com/api/v3';
+// 팀 문서는 Atlassian Confluence에 있다(2026-10-17, 결정 기록 2026-10-17-gh31-confluence-minutes).
+// 클래식 API 토큰(Basic Auth)은 사이트 주소로 부른다. 사이트 주소와 스페이스·페이지 ID는 코드 상수로 둔다.
+const ATLASSIAN_SITE = 'https://tkv123.atlassian.net';
+const CONFLUENCE_BASE = `${ATLASSIAN_SITE}/wiki/api/v2`;
+const CONFLUENCE_SPACE = { id: '98307', key: 'SCRUM' }; // Qello 스페이스
 
-// 회의록 템플릿 페이지(설계 5절 E). 워크스페이스·문서·페이지 ID는 코드 상수로 둔다(2026-10-11 사용자 결정).
-const TEMPLATE_PAGE = 'workspaces/1100370000016776/docs/z8rzdfhxc8-2398/pages/z8rzdfhxc8-4718';
+// 회의록 템플릿 페이지(설계 5절 E). 실행할 때마다 읽으므로 팀이 Confluence에서 고치면 배포 없이 반영된다.
+const TEMPLATE_PAGE = '294915'; // `회의록 템플릿`
 
-// 승인된 회의록을 쓰는 곳(설계 5절 H). `회의록` 페이지 바로 아래에 쓴다(2026-10-11 사용자 결정). 빼면 문서 최상위 페이지가 되어
-// 수집기가 회의록으로 보지 않는다. 비어 있으면 쓰기 준비 노드가 실패해 아무것도 쓰지 않는다.
-const CLICKUP_WORKSPACE = '1100370000016776';
-const MINUTES_DOC = 'z8rzdfhxc8-98';
-const MINUTES_PARENT_PAGE = 'z8rzdfhxc8-38'; // `회의록`
+// 승인된 회의록을 쓰는 곳(설계 5절 H). Team Docs > `회의록` 페이지 바로 아래에 쓴다. 비어 있으면 쓰기 준비 노드가 실패해 아무것도 쓰지 않는다.
+const MINUTES_PARENT_PAGE = '98458'; // `회의록`
 
 // 실패 알림(설계 5절 "실패 알림"). 실패한 실행을 n8n 컨테이너 안에서 n8n API로 읽는다. 회의 채널을 모르면 실제 회의 채널로 보낸다
 // (2026-10-11 사용자 결정, 채널 ID는 코드 상수).
@@ -40,6 +41,7 @@ const NEWEST_ID = `(Array.isArray($response.body) ? $response.body.map((m) => m.
 // Discord는 전용 노드로 불러 화면에서 아이콘으로 구분한다. 음성 인식은 OpenAI 전용 노드가 whisper-1 고정이고 프롬프트를 받지 않아
 // HTTP Request 노드로 gpt-4o-transcribe를 부른다(2026-10-11 사용자 결정).
 const CREDENTIAL_TYPES = { 'n8n-nodes-base.discord': 'discordBotApi' };
+// Confluence는 n8n 전용 노드가 없어 HTTP Request 노드에 일반 Basic Auth(Atlassian 계정 이메일 + API 토큰)를 쓴다.
 
 /** 노드에서 고를 자격 증명 종류. 테스트(scripts/e2e-n8n.js)도 이 함수로 테스트 자격 증명을 붙인다. */
 export const credentialTypeOf = (node) =>
@@ -85,11 +87,11 @@ const POSITIONS = {
   '수정 반영 만들기': [5760, 240],
   '수정 반영': [6000, 240],
   '결과 표시': [5520, -120],
-  // 결과 표시 뒤 두 갈래: 위가 ClickUp 쓰기(승인일 때만), 아래가 기한 초과 알림(기한 초과일 때만)
+  // 결과 표시 뒤 두 갈래: 위가 Confluence 쓰기(승인일 때만), 아래가 기한 초과 알림(기한 초과일 때만)
   '쓰기 준비': [5760, -240],
   '기한 초과 알림 만들기': [5760, -60],
   '기한 초과 알림': [6000, -60],
-  '페이지 목록 읽기': [6000, -240],
+  '같은 제목 찾기': [6000, -240],
   '쓰기 판단': [6240, -240],
   '같은 이름 확인': [6480, -240],
   '페이지 만들기': [6720, -180],
@@ -98,7 +100,7 @@ const POSITIONS = {
   '쓰기 결과 표시': [7440, -240],
 };
 
-// 페이지 만들기와 그 뒤 노드. 여기서 실패하면 ClickUp에 페이지가 생겼을 수 있다(페이지 만들기는 재시도하지 않는다).
+// 페이지 만들기와 그 뒤 노드. 여기서 실패하면 Confluence에 페이지가 생겼을 수 있다(페이지 만들기는 재시도하지 않는다).
 const AFTER_WRITE = ['페이지 만들기', '페이지 다시 읽기', '내용 대조', '쓰기 결과 표시'];
 
 const FAILURE_POSITIONS = {
@@ -159,8 +161,8 @@ const EDGES = [
   ['수정 반영', '승인 기다리기'],
   ['결과 표시', '쓰기 준비'],
   ['결과 표시', '기한 초과 알림 만들기'],
-  ['쓰기 준비', '페이지 목록 읽기'],
-  ['페이지 목록 읽기', '쓰기 판단'],
+  ['쓰기 준비', '같은 제목 찾기'],
+  ['같은 제목 찾기', '쓰기 판단'],
   ['쓰기 판단', '같은 이름 확인'],
   ['같은 이름 확인', '쓰기 결과 표시', 0, 0],
   ['같은 이름 확인', '페이지 만들기', 0, 1],
@@ -201,6 +203,7 @@ const http = (name, parameters, settings = {}) => ({
 });
 
 const credential = (type) => ({ authentication: 'predefinedCredentialType', nodeCredentialType: type });
+const basicAuth = { authentication: 'genericCredentialType', genericAuthType: 'httpBasicAuth' };
 
 /** 참이면 출력 0, 거짓이면 출력 1로 보내는 If 노드. 조건은 불리언 식 하나다. */
 const ifNode = (name, expression, id) => ({
@@ -219,12 +222,11 @@ const ifNode = (name, expression, id) => ({
 
 export async function buildWorkflow({
   openaiBase = OPENAI_BASE,
-  clickupBase = CLICKUP_BASE,
+  confluenceBase = CONFLUENCE_BASE,
   approvalWait = APPROVAL_WAIT,
   minutesParentPage = MINUTES_PARENT_PAGE,
 } = {}) {
-  const clickup = `const CLICKUP = ${JSON.stringify({ workspaceId: CLICKUP_WORKSPACE, docId: MINUTES_DOC, parentPageId: minutesParentPage })};`;
-  const minutesDoc = `${clickupBase}/workspaces/${CLICKUP_WORKSPACE}/docs/${MINUTES_DOC}`;
+  const confluence = `const CONFLUENCE = ${JSON.stringify({ site: ATLASSIAN_SITE, spaceId: CONFLUENCE_SPACE.id, spaceKey: CONFLUENCE_SPACE.key, parentPageId: minutesParentPage })};`;
   const discordPatch = (name) => http(
     name,
     {
@@ -328,15 +330,15 @@ export async function buildWorkflow({
       '템플릿 읽기',
       {
         method: 'GET',
-        url: `${clickupBase}/${TEMPLATE_PAGE}`,
-        ...credential('clickUpApi'),
+        url: `${confluenceBase}/pages/${TEMPLATE_PAGE}`,
+        ...basicAuth,
         sendQuery: true,
-        queryParameters: { parameters: [{ name: 'content_format', value: 'text/md' }] },
+        queryParameters: { parameters: [{ name: 'body-format', value: 'storage' }] },
       },
       // 읽기라 다시 보내도 안전하다. 3번 모두 실패하면 실행을 실패시킨다.
       { retryOnFail: true, maxTries: 3, waitBetweenTries: 5000 },
     ),
-    code('초안 요청 만들기', await readCode('draft-request')),
+    code('초안 요청 만들기', await withShared('draft-request', ['confluence-format'])),
     http(
       '초안 작성',
       {
@@ -419,7 +421,7 @@ export async function buildWorkflow({
     code('결정 읽기', await withShared('approval-result', ['draft-rules', 'approval-buttons'])),
     ifNode('기한 초과 확인', "$json.outcome === 'timeout'", '5e0f7a3c-1d2b-4c8e-9f60-2a1b3c4d5e01'),
     {
-      // 녹음 봇의 재개 요청에 판단을 JSON으로 답한다(n8n 2.42.6 실험). 승인은 ClickUp 쓰기를 기다리지 않고 먼저 답한다.
+      // 녹음 봇의 재개 요청에 판단을 JSON으로 답한다(n8n 2.42.6 실험). 승인은 Confluence 쓰기를 기다리지 않고 먼저 답한다.
       parameters: { respondWith: 'json', responseBody: '={{ JSON.stringify($json.response) }}', options: {} },
       name: '결정 응답',
       type: 'n8n-nodes-base.respondToWebhook',
@@ -430,20 +432,32 @@ export async function buildWorkflow({
     code('수정 반영 만들기', await withShared('approval-edit', ['approval-buttons'])),
     discordPatch('수정 반영'),
     discordPatch('결과 표시'),
-    code('쓰기 준비', await withShared('clickup-prepare', [], clickup)),
+    code('쓰기 준비', await withShared('minutes-prepare', ['confluence-format'], confluence)),
     http(
-      '페이지 목록 읽기',
-      { method: 'GET', url: `${minutesDoc}/page_listing`, ...credential('clickUpApi') },
-      // 읽기라 다시 보내도 안전하다. 목록이 비어도 쓰기 판단이 돌아 상위 페이지가 없다고 멈추게 한다.
-      { alwaysOutputData: true, retryOnFail: true, maxTries: 3, waitBetweenTries: 5000 },
+      '같은 제목 찾기',
+      {
+        method: 'GET',
+        url: `${confluenceBase}/pages`,
+        ...basicAuth,
+        sendQuery: true,
+        // 상태를 지정하지 않으면 current와 archived 페이지를 찾는다. 제목은 한 스페이스 안에서 겹칠 수 없다.
+        queryParameters: {
+          parameters: [
+            { name: 'space-id', value: CONFLUENCE_SPACE.id },
+            { name: 'title', value: '={{ $json.name }}' },
+          ],
+        },
+      },
+      // 읽기라 다시 보내도 안전하다. 3번 모두 실패하면 실행을 실패시킨다.
+      { retryOnFail: true, maxTries: 3, waitBetweenTries: 5000 },
     ),
-    code('쓰기 판단', await readCode('clickup-dedupe')),
+    code('쓰기 판단', await readCode('minutes-dedupe')),
     ifNode('같은 이름 확인', '$json.duplicate', '5e0f7a3c-1d2b-4c8e-9f60-2a1b3c4d5e04'),
-    // 쓰기 요청은 재시도하지 않는다. 응답을 못 받고 다시 보내면 페이지가 두 개 생길 수 있다(설계 5절 H).
+    // 쓰기 요청은 재시도하지 않는다. 응답을 못 받고 다시 보내면 같은 제목 오류로 실패하거나 페이지가 남을 수 있다(설계 5절 H).
     http('페이지 만들기', {
       method: 'POST',
-      url: `${minutesDoc}/pages`,
-      ...credential('clickUpApi'),
+      url: `${confluenceBase}/pages`,
+      ...basicAuth,
       sendBody: true,
       specifyBody: 'json',
       jsonBody: '={{ JSON.stringify($json.request) }}',
@@ -452,14 +466,14 @@ export async function buildWorkflow({
       '페이지 다시 읽기',
       {
         method: 'GET',
-        url: `=${minutesDoc}/pages/{{ $json.id }}`,
-        ...credential('clickUpApi'),
+        url: `=${confluenceBase}/pages/{{ $json.id }}`,
+        ...basicAuth,
         sendQuery: true,
-        queryParameters: { parameters: [{ name: 'content_format', value: 'text/md' }] },
+        queryParameters: { parameters: [{ name: 'body-format', value: 'storage' }] },
       },
       { retryOnFail: true, maxTries: 3, waitBetweenTries: 5000 },
     ),
-    code('내용 대조', await withShared('clickup-verify', [], clickup)),
+    code('내용 대조', await withShared('minutes-verify', ['confluence-format'], confluence)),
     discordPatch('쓰기 결과 표시'),
     code('기한 초과 알림 만들기', await readCode('approval-timeout')),
     http(

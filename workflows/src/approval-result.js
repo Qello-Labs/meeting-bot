@@ -30,7 +30,7 @@ if (body.rev !== current.rev) {
   return [{ json: { ...base, outcome: 'stale', by, response: { result: 'stale', rev: current.rev } } }];
 }
 if (body.decision === 'approve') {
-  return [{ json: { ...base, outcome: 'approve', by, response: { result: 'accepted', decision: 'approve' }, body: settle(`승인(${by}). ClickUp에 쓰는 중입니다`) } }];
+  return [{ json: { ...base, outcome: 'approve', by, response: { result: 'accepted', decision: 'approve' }, body: settle(`승인(${by}). Confluence에 쓰는 중입니다`) } }];
 }
 if (body.decision === 'reject') {
   return [{ json: { ...base, outcome: 'reject', by, response: { result: 'accepted', decision: 'reject' }, body: settle(`거절(${by})`) } }];

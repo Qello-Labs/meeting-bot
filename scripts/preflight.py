@@ -51,6 +51,8 @@ RULES = (
     ("anthropic-key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}")),
     ("openai-key", re.compile(r"\bsk-(?!ant-)(?:proj-)?[A-Za-z0-9_-]{32,}")),
     ("clickup-token", re.compile(r"\bpk_[0-9]+_[A-Za-z0-9]{20,}")),
+    # Atlassian API 토큰(Confluence·Jira). 옛 ClickUp 토큰이 남아 있을 수 있어 ClickUp 규칙도 지우지 않는다.
+    ("atlassian-token", re.compile(r"\bATATT[A-Za-z0-9_=-]{20,}")),
     ("discord-bot-token", re.compile(r"\b[MNO][A-Za-z0-9_-]{23,27}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}")),
     (
         "discord-webhook-url",

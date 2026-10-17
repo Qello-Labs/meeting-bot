@@ -10,7 +10,7 @@
 </p>
 
 **Discord 회의**를 말하는 사람별로 녹음하고 **n8n 워크플로**가 **녹취와 회의록 초안**을 만든다.
-초안의 결정마다 근거가 실제 입력에 있는지 코드로 확인하고, 팀원이 승인한 회의록만 ClickUp 회의록 페이지에 올린다.
+초안의 결정마다 근거가 실제 입력에 있는지 코드로 확인하고, 팀원이 승인한 회의록만 Confluence `회의록` 페이지 아래에 올린다.
 
 ## 목차
 
@@ -28,14 +28,14 @@
 
 ## 1. 개발 배경
 
-Discord에서 주 2회 회의하고 ClickUp에 정해진 템플릿으로 회의록을 쓴다. 회의 사이의 결정은 Discord 채팅으로 한다.
+Discord에서 주 2회 회의하고 Confluence에 정해진 템플릿으로 회의록을 쓴다(2026-10-17 ClickUp에서 옮김). 일정과 스프린트는 Jira에서 관리한다. 회의 사이의 결정은 Discord 채팅으로 한다.
 회의록을 쓰려면 회의 내용을 템플릿에 옮기고 채팅에 흩어진 결정까지 찾아 넣어야 한다.
 
 이 일을 LLM 요약에 맡기면 회의에 없던 결정이 들어갈 수 있다. 그래서 세 가지를 원칙으로 정했다.
 
 - LLM은 템플릿을 채우는 데 사용하고 나머지 처리는 코드가 한다.
 - 결정마다 녹취 시각이나 Discord 메시지 링크를 근거로 달고, 근거가 입력에 있는지 코드가 확인한다.
-- 사람이 승인한 회의록만 ClickUp에 쓴다.
+- 사람이 승인한 회의록만 Confluence에 쓴다.
 
 ## 2. 핵심 기능
 
@@ -48,7 +48,7 @@ Discord에서 주 2회 회의하고 ClickUp에 정해진 템플릿으로 회의�
 - **채팅 결정 수집**: 지난 회의록 이후 ✅ 반응이 달린 메시지를 코드가 고른다.
 - **근거 검증**: 결정의 근거가 녹취와 수집한 메시지에 없으면 초안을 승인으로 넘기지 않는다.
 - **Discord 버튼 승인**: 팀원 누구나 승인, 수정, 거절할 수 있다. 고친 초안도 같은 규칙으로 다시 검증한다.
-- **ClickUp 기록**: 승인본을 쓴 뒤 다시 읽어 대조한다.
+- **Confluence 기록**: 승인본을 쓴 뒤 다시 읽어 대조한다.
 - **실패 알림**: 어느 단계든 실패하면 회의 채널에 알린다.
 
 ## 3. 기술 스택
@@ -58,7 +58,7 @@ Discord에서 주 2회 회의하고 ClickUp에 정해진 템플릿으로 회의�
   <img src="https://cdn.simpleicons.org/nodedotjs" height="32" alt="Node.js">&nbsp;&nbsp;
   <img src="https://cdn.simpleicons.org/ffmpeg" height="32" alt="FFmpeg">&nbsp;&nbsp;
   <img src="https://cdn.simpleicons.org/n8n" height="32" alt="n8n">&nbsp;&nbsp;
-  <img src="https://cdn.simpleicons.org/clickup" height="32" alt="ClickUp">&nbsp;&nbsp;
+  <img src="https://cdn.simpleicons.org/confluence" height="32" alt="Confluence">&nbsp;&nbsp;
   <img src="https://cdn.simpleicons.org/docker" height="32" alt="Docker">&nbsp;&nbsp;
   <img src="https://cdn.jsdelivr.net/gh/devicons/devicon/icons/oracle/oracle-original.svg" height="32" alt="Oracle Cloud">&nbsp;&nbsp;
   <img src="https://cdn.simpleicons.org/githubactions" height="32" alt="GitHub Actions">
@@ -71,17 +71,17 @@ Discord에서 주 2회 회의하고 ClickUp에 정해진 템플릿으로 회의�
 | n8n 2.42.6                                      | 처음 구상은 스크립트와 GitHub Actions였다. 몇 분 걸리는 음성 인식과 최대 3일의 승인 대기가 들어오면서 Wait, 재시도, 실행 기록이 필요해졌다                     |
 | OpenAI `gpt-4o-transcribe`                      | 참석자 이름을 프롬프트로 넘긴다. n8n OpenAI 노드는 `whisper-1` 고정이라 HTTP 노드로 부른다([결정 기록](docs/decisions/2026-10-11-gh13-transcription-nodes.md)) |
 | OpenAI `gpt-6-luna`                             | 음성 인식과 제공자를 맞췄다. 형식이 틀린 초안은 검증 코드가 멈추므로 저가형을 골랐다([결정 기록](docs/decisions/2026-10-11-gh17-draft-model.md))               |
-| ClickUp API v3                                  | 팀이 이미 쓰는 회의록 문서다. 템플릿도 실행할 때 ClickUp에서 읽는다                                                                                            |
+| Confluence REST API v2                          | 팀 문서가 있는 곳이다. 템플릿도 실행할 때 읽는다. Markdown API가 없어 저장 형식(XHTML)과 코드로 바꾼다([결정 기록](docs/decisions/2026-10-17-gh31-confluence-minutes.md)) |
 | Docker Compose, Oracle A1(arm64)                | 녹음 봇과 n8n이 녹음 볼륨을 공유한다. Always Free 한도 안에서 돈다                                                                                             |
 | GitHub Actions, GHCR                            | 승인한 태그만 SSH로 배포하고 기록을 GitHub에 남긴다([결정 기록](docs/decisions/2026-10-13-gh26-ssh-push-deploy.md))                                            |
 
 ## 4. 시스템 구조
 
 <p align="center">
-  <img src="docs/assets/diagrams/architecture.svg" alt="시스템 구성: Discord 음성 채널과 회의 채널, Oracle A1 서버의 녹음 봇과 n8n 두 워크플로와 recordings 볼륨, 외부 API인 OpenAI와 ClickUp" width="100%">
+  <img src="docs/assets/diagrams/architecture.svg" alt="시스템 구성: Discord 음성 채널과 회의 채널, Oracle A1 서버의 녹음 봇과 n8n 두 워크플로와 recordings 볼륨, 외부 API인 OpenAI와 Confluence" width="100%">
 </p>
 
-서버에는 녹음 봇과 n8n 두 컨테이너가 있고 `recordings` 볼륨을 공유한다. 녹음 봇은 Discord 토큰만 갖고, OpenAI와 ClickUp 키는 n8n 자격 증명에만 있다.
+서버에는 녹음 봇과 n8n 두 컨테이너가 있고 `recordings` 볼륨을 공유한다. 녹음 봇은 Discord 토큰만 갖고, OpenAI 키와 Atlassian API 토큰은 n8n 자격 증명에만 있다.
 서버 인바운드는 SSH뿐이고 n8n은 `127.0.0.1:5678`에만 열린다.
 
 구조를 정한 결정은 다음과 같다. 전체 목록은 [설계 문서 3절](docs/design/meeting-notes.md)에 있다.
@@ -97,15 +97,15 @@ Discord에서 주 2회 회의하고 ClickUp에 정해진 템플릿으로 회의�
 </p>
 
 <p align="center">
-  <img src="docs/assets/screenshots/n8n-stages.png" alt="회의 녹취 워크플로 40개 노드를 녹취·결정 수집, AI 초안·Discord 전달, 승인·수정 처리, ClickUp 저장·결과 확인 네 단계로 나눈 캡처" width="100%">
+  <img src="docs/assets/screenshots/n8n-stages.png" alt="회의 녹취 워크플로 40개 노드를 녹취·결정 수집, AI 초안·Discord 전달, 승인·수정 처리, 저장·결과 확인 네 단계로 나눈 캡처(Confluence로 옮기기 전 화면)" width="100%">
 </p>
 
 위는 실제 n8n 화면이고, 아래는 같은 40개 노드를 단계별로 나눠 캡처한 것이다.
 
 - **01 녹취·결정 수집 (11개)**: `회의 종료` Webhook이 manifest를 받자마자 응답하고, `녹음 정보 확인`이 회의 ID와 파일 이름 형식을 검사한다. `발화 파일 확인`은 읽은 파일 수와 순서가 발화 목록과 다르면 멈춘다. 위 갈래(결정 메시지 기간, 조회, 고르기)가 먼저 돌고 아래 갈래(음성 인식, 녹취 만들기)가 뒤에 돌아, Discord 조회가 실패하면 유료 음성 인식 전에 멈춘다. `녹취·결정 합치기`가 두 갈래를 기다린다.
-- **02 AI 초안·Discord 전달 (10개)**: ClickUp 템플릿을 읽고 `초안 요청 만들기`가 템플릿, 녹취, 결정 메시지를 태그로 감싸 OpenAI에 보낸다. `초안 검증`이 근거를 확인하고 `회의 채널 알림`이 결과 개수를 알린다. 통과한 초안만 `초안 메시지 만들기`로 가고, `긴 초안 확인`이 4,096자를 넘는 초안은 `.md` 파일을 붙여 보낸다.
+- **02 AI 초안·Discord 전달 (10개)**: Confluence 템플릿을 읽어 Markdown으로 바꾸고 `초안 요청 만들기`가 템플릿, 녹취, 결정 메시지를 태그로 감싸 OpenAI에 보낸다. `초안 검증`이 근거를 확인하고 `회의 채널 알림`이 결과 개수를 알린다. 통과한 초안만 `초안 메시지 만들기`로 가고, `긴 초안 확인`이 4,096자를 넘는 초안은 `.md` 파일을 붙여 보낸다.
 - **03 승인·수정 처리 (9개)**: `승인 기다리기`(Wait)가 최대 3일 버튼 클릭을 기다린다. `결정 읽기`가 판 번호를 비교하고 고친 초안을 다시 검증하며, `결정 응답`이 녹음 봇에 판단을 돌려준다. 수정이 통과하면 `수정 반영`이 같은 메시지를 고치고 다시 기다린다. `결과 표시`는 버튼을 지우고 승인, 거절, 기한 초과를 적는다.
-- **04 ClickUp 저장·결과 확인 (10개)**: `쓰기 준비`가 제목과 Markdown을 정리하고, `쓰기 판단`이 상위 페이지와 같은 이름을 확인한다. `페이지 만들기` 뒤 `페이지 다시 읽기`와 `내용 대조`로 저장된 본문을 확인하고 `쓰기 결과 표시`가 링크를 남긴다. 기한을 넘기면 `기한 초과 알림`이 답장한다.
+- **04 Confluence 저장·결과 확인 (10개)**: `쓰기 준비`가 제목을 정하고 본문을 저장 형식으로 바꾼다. `같은 제목 찾기`와 `쓰기 판단`이 스페이스에 같은 제목이 있는지 확인한다. `페이지 만들기` 뒤 `페이지 다시 읽기`와 `내용 대조`로 저장된 본문을 확인하고 `쓰기 결과 표시`가 링크를 남긴다. 기한을 넘기면 `기한 초과 알림`이 답장한다.
 
 ## 5. 동작 원리
 
@@ -118,7 +118,7 @@ Discord에서 주 2회 회의하고 ClickUp에 정해진 템플릿으로 회의�
 1. **녹음 봇**이 0.7초 미만 발화를 버리고 webm으로 옮긴 뒤 `manifest.json`만 **n8n**에 보낸다. 음성 파일은 **n8n**이 공유 볼륨에서 읽는다.
 2. **n8n**이 지난 회의록 이후 회의 채널에서 ✅ 반응이 달린 메시지를 모은다.
 3. 발화마다 음성 인식을 불러 _`[HH:MM:SS] 화자: 내용`_ 형식의 녹취를 만든다. 이 시각이 녹취 근거의 식별자다.
-4. ClickUp 템플릿, 녹취, 결정 메시지를 태그로 감싸 데이터로만 넘기고 초안을 받는다. 응답은 OpenAI에 저장하지 않는다(`store: false`).
+4. Confluence 템플릿(Markdown으로 바꾼 것), 녹취, 결정 메시지를 태그로 감싸 데이터로만 넘기고 초안을 받는다. 응답은 OpenAI에 저장하지 않는다(`store: false`).
 5. 코드가 초안을 검증하고, 통과한 초안만 승인 버튼과 함께 회의 채널에 올린다.
 
 녹음 중 봇 연결이 끊기면 _5_ 초에서 _30_ 초까지 간격을 늘려 가며 같은 회의로 다시 들어가고, 끊긴 구간을 manifest에 남긴다.
@@ -142,21 +142,21 @@ Discord에서 주 2회 회의하고 ClickUp에 정해진 템플릿으로 회의�
 
 규칙은 [`workflows/src/shared/draft-rules.js`](workflows/src/shared/draft-rules.js) 한 곳에 있고, GPT 초안과 사람이 고친 초안에 같이 쓴다.
 
-### 5.3 승인과 ClickUp 쓰기
+### 5.3 승인과 Confluence 쓰기
 
 <p align="center">
-  <img src="docs/assets/diagrams/sequence-approval.svg" alt="승인 또는 수정 클릭을 녹음 봇이 n8n 재개 주소로 전달하고, 승인이면 ClickUp에 쓰고 대조하는 시퀀스" width="100%">
+  <img src="docs/assets/diagrams/sequence-approval.svg" alt="승인 또는 수정 클릭을 녹음 봇이 n8n 재개 주소로 전달하고, 승인이면 Confluence에 쓰고 대조하는 시퀀스" width="100%">
 </p>
 
-- 초안은 3일 동안 승인을 기다린다. 거절하거나 기한이 지나면 ClickUp에 쓰지 않는다.
+- 초안은 3일 동안 승인을 기다린다. 거절하거나 기한이 지나면 Confluence에 쓰지 않는다.
 - 같은 실행은 다시 기다려도 재개 서명이 같다. 그래서 판 번호로 옛 버튼의 클릭을 무시한다.
-- 승인하면 `회의록` 아래에 _`YYYY-MM-DD 정기 회의`_ 페이지를 만들고, 다시 읽어 제목과 본문을 대조한다. 같은 이름의 페이지가 있으면 쓰지 않는다.
+- 승인하면 `회의록` 아래에 _`YYYY-MM-DD 정기 회의`_ 페이지를 만들고, 다시 읽어 제목과 본문을 대조한다. Confluence는 스페이스 안에서 제목이 겹칠 수 없어서, 스페이스에 같은 제목의 페이지가 있으면 쓰지 않는다.
 - 실패하면 **실패 알림 워크플로**가 회의 채널에 실패한 단계와 오류 종류를 알린다. 오류 원문에는 녹취가 섞일 수 있어 넣지 않는다.
 
 ## 6. 데이터 흐름과 인프라
 
 <p align="center">
-  <img src="docs/assets/diagrams/data-flow.svg" alt="회의 데이터의 흐름: 서버에 7일 남는 recordings와 n8n 실행 기록, OpenAI로 가는 음성과 녹취, 승인 뒤 ClickUp에 남는 회의록" width="100%">
+  <img src="docs/assets/diagrams/data-flow.svg" alt="회의 데이터의 흐름: 서버에 7일 남는 recordings와 n8n 실행 기록, OpenAI로 가는 음성과 녹취, 승인 뒤 Confluence에 남는 회의록" width="100%">
 </p>
 
 - 서버의 녹음은 회의가 끝난 지 7일 뒤에, n8n 실행 기록(녹취와 초안)은 168시간 뒤에 지워진다.
@@ -181,7 +181,7 @@ n8n은 녹음 볼륨을 읽기만 하고 파일 읽기도 `/recordings`로 제�
 
 - LLM이 템플릿 Markdown을 직접 채운다. 템플릿을 바꿔도 코드는 그대로지만, LLM이 형식을 어기면 초안이 멈춘다. 멈춘 횟수를 보고 JSON 방식으로 바꿀지 정한다.
 - 초안 모델은 저가형이다. 회의당 초안 비용은 약 $0.02(추정치)=
-- ClickUp 페이지 생성은 재시도하지 않는다. 같은 회의록이 두 번 생기지 않는 대신 일시 오류에도 실패한다.
+- Confluence 페이지 생성은 재시도하지 않는다. 같은 회의록이 두 번 생기지 않는 대신 일시 오류에도 실패한다.
 
 ## 8. 설치와 실행
 
@@ -204,7 +204,7 @@ npm start                 # 녹음 봇만 실행
 docker compose up -d --build   # 녹음 봇과 n8n을 함께 실행
 ```
 
-워크플로 가져오기와 n8n 자격 증명(OpenAI, Discord Bot, ClickUp) 등록은 [workflows/README.md](workflows/README.md)를 따른다.
+워크플로 가져오기와 n8n 자격 증명(OpenAI, Discord Bot, Atlassian Basic Auth) 등록은 [workflows/README.md](workflows/README.md)를 따른다.
 
 | 변수                                    | 설명                                                           |
 | --------------------------------------- | -------------------------------------------------------------- |
@@ -219,7 +219,7 @@ docker compose up -d --build   # 녹음 봇과 n8n을 함께 실행
 
 ```bash
 npm test          # 녹음 봇, 워크플로, 배포 오프라인 테스트. ffmpeg 필요
-npm run e2e:n8n   # 실제 n8n과 가짜 OpenAI, Discord, ClickUp. Docker 필요, 비용 없음
+npm run e2e:n8n   # 실제 n8n과 가짜 OpenAI, Discord, Confluence. Docker 필요, 비용 없음
 ```
 
 ## 9. 배포와 운영
@@ -272,9 +272,9 @@ git fetch origin && git tag v1.2.3 origin/main && git push origin v1.2.3
 
    [SCREENSHOT: 승인 전 초안 메시지의 `승인`·`수정`·`거절` 버튼]
 
-3. 팀원이 `승인`을 누르면 ClickUp `회의록` 아래에 페이지가 생기고, 초안 메시지에 링크가 적힌다.
+3. 팀원이 `승인`을 누르면 Confluence `회의록` 아래에 페이지가 생기고, 초안 메시지에 링크가 적힌다.
 
-   [SCREENSHOT: ClickUp에 만들어진 `YYYY-MM-DD 정기 회의` 페이지. 결정 사항의 근거 링크가 그대로 남아 있는 것을 보여 준다]
+   [SCREENSHOT: Confluence에 만들어진 `YYYY-MM-DD 정기 회의` 페이지. 결정 사항의 근거 링크가 그대로 남아 있는 것을 보여 준다]
 
 4. 처리 중 실패하면 회의 채널에 알림이 온다.
 

@@ -68,7 +68,7 @@ git log --oneline -10
    - src/finalize.js
    이유: 녹음 마무리 동작 — 워크플로 변경 없이 단독 검토 가능
 
-2. feat(workflow): validate decision evidence before ClickUp write (#12)
+2. feat(workflow): validate decision evidence before Confluence write (#12)
    - workflows/meeting-notes.json
    이유: 1이 보낸 manifest를 받는 n8n 쪽 처리
 

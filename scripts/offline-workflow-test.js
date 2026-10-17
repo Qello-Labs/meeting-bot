@@ -4,10 +4,17 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { FAILURE_WORKFLOW_FILE, WORKFLOW_FILE, buildFailureWorkflow, buildWorkflow, credentialTypeOf, serialize } from './build-workflow.js';
 import { diffWorkflows, pickWorkflow } from './diff-workflow.js';
-import { TEMPLATE } from '../test/e2e/template.js';
+import { TEMPLATE, TEMPLATE_STORAGE } from '../test/e2e/template.js';
 
 const workflow = await buildWorkflow();
 const AsyncFunction = (async () => {}).constructor;
+
+// Code 노드에 붙는 Confluence 변환 코드(shared/confluence-format.js). 가짜 Confluence 응답을 만들 때도 쓴다.
+const { markdownToStorage, storageToMarkdown, comparableLines } = new Function(
+  `${await readFile(new URL('../workflows/src/shared/confluence-format.js', import.meta.url), 'utf8')}\nreturn { markdownToStorage, storageToMarkdown, comparableLines };`,
+)();
+/** Confluence v2 페이지 조회 응답(body-format=storage). */
+const confluencePage = (storage, extra = {}) => ({ id: '294915', status: 'current', title: '회의록 템플릿', body: { storage: { representation: 'storage', value: storage } }, ...extra });
 
 /** 승인 기다리기의 재개 주소. 실험(n8n 2.42.6)에서 본 형식과 같고 서명은 지어낸 값이다. */
 const SIGNATURE = 'ab'.repeat(32);
@@ -191,8 +198,8 @@ for (const [label, body, expected] of [
   assert.ok(nodeOf('음성 인식').parameters.bodyParameters.parameters.some((p) => p.name === 'model' && p.value === 'gpt-4o-transcribe'));
   assert.equal(nodeOf('회의 채널 알림').type, 'n8n-nodes-base.discord');
   assert.deepEqual(workflow.nodes.map(credentialTypeOf).filter(Boolean), [
-    'discordBotApi', 'openAiApi', 'clickUpApi', 'openAiApi', 'discordBotApi', 'discordBotApi', 'discordBotApi',
-    'discordBotApi', 'discordBotApi', 'clickUpApi', 'clickUpApi', 'clickUpApi', 'discordBotApi', 'discordBotApi',
+    'discordBotApi', 'openAiApi', 'httpBasicAuth', 'openAiApi', 'discordBotApi', 'discordBotApi', 'discordBotApi',
+    'discordBotApi', 'discordBotApi', 'httpBasicAuth', 'httpBasicAuth', 'httpBasicAuth', 'discordBotApi', 'discordBotApi',
   ]);
   assert.deepEqual(
     workflow.nodes.map((n) => n.name),
@@ -201,7 +208,7 @@ for (const [label, body, expected] of [
       '결정 메시지 기간', '결정 메시지 조회', '결정 메시지 고르기', '음성 인식', '녹취 만들기',
       '녹취·결정 합치기', '템플릿 읽기', '초안 요청 만들기', '초안 작성', '초안 검증', '알림 만들기', '회의 채널 알림',
       '초안 메시지 만들기', '긴 초안 확인', '초안 보내기(첨부)', '초안 보내기', '승인 기다리기', '결정 읽기', '기한 초과 확인',
-      '결정 응답', '승인·거절 확인', '수정 확인', '수정 반영 만들기', '수정 반영', '결과 표시', '쓰기 준비', '페이지 목록 읽기',
+      '결정 응답', '승인·거절 확인', '수정 확인', '수정 반영 만들기', '수정 반영', '결과 표시', '쓰기 준비', '같은 제목 찾기',
       '쓰기 판단', '같은 이름 확인', '페이지 만들기', '페이지 다시 읽기', '내용 대조', '쓰기 결과 표시',
       '기한 초과 알림 만들기', '기한 초과 알림',
     ],
@@ -522,7 +529,7 @@ const GOOD_DRAFT = `| 필드 | 값 |
 
 ## 액션 아이템
 
-| 담당 파트 | 담당자 | 할 일 | 기한 | ClickUp 작업 |
+| 담당 파트 | 담당자 | 할 일 | 기한 | Jira 이슈 |
 | ---| ---| ---| ---| --- |
 | Backend | 도연 | 배포 | 금요일 | 없음 |
 | Frontend | 참석자 2 | 화면 확인 | 2026-10-16 | 없음 |
@@ -556,12 +563,12 @@ const gptResponse = (text, extra = {}) => ({
 });
 
 /** 녹취·결정 메시지까지 지어낸 값으로 채우고 초안 요청을 만든다. */
-async function untilRequest({ decisions = DECISIONS, template = TEMPLATE, transcript = TRANSCRIPT, execution } = {}) {
+async function untilRequest({ decisions = DECISIONS, template = TEMPLATE_STORAGE, transcript = TRANSCRIPT, execution } = {}) {
   const h = harness({}, execution);
   await runUntilFiles(h, manifest);
   h.set('녹취 만들기', [{ json: { meetingId: manifest.meetingId, segmentCount: 4, transcript } }]);
   h.set('결정 메시지 고르기', [{ json: { decisionCount: decisions.length, decisions } }]);
-  h.set('템플릿 읽기', [{ json: { id: 'page', name: '회의록 템플릿', content: template } }]);
+  h.set('템플릿 읽기', [{ json: confluencePage(template) }]);
   const [request] = await h.code('초안 요청 만들기', '템플릿 읽기');
   return { h, request: request.json };
 }
@@ -605,8 +612,37 @@ const kinds = (result) => result.errors.map((e) => e.kind);
   assert.ok(!user.includes('400000000000000'), '요청에 참석자 Discord ID가 들어가지 않는다');
 }
 
-// 템플릿 페이지 응답에 Markdown 본문이 없으면 실패한다.
-await assert.rejects(untilRequest({ template: '' }), /Markdown 본문\(content\)이 없습니다/);
+// 템플릿 페이지 응답에 본문이 없으면 실패한다.
+await assert.rejects(untilRequest({ template: '' }), /본문\(body\.storage\)이 없습니다/);
+await assert.rejects(untilRequest({ template: '<p><ac:structured-macro ac:name="anchor"></ac:structured-macro></p>' }), /본문\(body\.storage\)이 없습니다/);
+
+// Confluence 저장 형식 변환: 옮겨 온 템플릿(머리글이 td인 표, 앵커 매크로, 마이그레이션 확장)은 지금의 Markdown 템플릿이 된다.
+// 회의록 Markdown은 저장 형식으로 바꿨다가 다시 읽어도 대조 기준(comparableLines)으로 같다.
+{
+  assert.equal(storageToMarkdown(TEMPLATE_STORAGE), TEMPLATE);
+  for (const markdown of [TEMPLATE, GOOD_DRAFT]) {
+    assert.deepEqual(comparableLines(storageToMarkdown(markdownToStorage(markdown))), comparableLines(markdown));
+  }
+  // 글자는 XML로 이스케이프하고, 링크·굵게·인라인 코드·줄바꿈·인용·하위 목록·코드 블록을 저장 형식으로 바꾼다.
+  const storage = markdownToStorage([
+    '## 제목', '', '문단 & <태그> **굵게** `a|b` [링크](https://example.com/a?b=1&c=2) <https://example.com/n><br>', '둘째 줄',
+    '', '> 인용', '', '*   항목', '    *   하위', '1. 번호', '', '```', 'x ]]> y', '```', '', '| 칸 | 값 |', '| --- | --- |', '| a\\|b | |',
+  ].join('\n'));
+  assert.equal(storage, [
+    '<h2>제목</h2>',
+    '<p>문단 &amp; &lt;태그&gt; <strong>굵게</strong> <code>a|b</code> <a href="https://example.com/a?b=1&amp;c=2">링크</a> ',
+    '<a href="https://example.com/n">https://example.com/n</a><br />둘째 줄</p>',
+    '<blockquote><p>인용</p></blockquote>',
+    '<ul><li><p>항목</p><ul><li><p>하위</p></li></ul></li></ul><ol><li><p>번호</p></li></ol>',
+    '<ac:structured-macro ac:name="code"><ac:plain-text-body><![CDATA[x ]]]]><![CDATA[> y]]></ac:plain-text-body></ac:structured-macro>',
+    '<table><tbody><tr><th><p>칸</p></th><th><p>값</p></th></tr><tr><td><p>a|b</p></td><td><p></p></td></tr></tbody></table>',
+  ].join(''));
+  // Confluence가 저장하며 붙이는 속성, 빈 문단, 다른 매크로, 엔티티는 Markdown에 영향을 주지 않는다.
+  assert.equal(
+    storageToMarkdown('<h2 ac:local-id="x">결정&nbsp;사항</h2><p /><ul><li><p>배포&#44; <a href="https://d.example/1" data-card-appearance="inline">D</a></p></li></ul><ac:structured-macro ac:name="toc" />'),
+    '## 결정 사항\n\n- 배포, [D](https://d.example/1)',
+  );
+}
 
 // 정상 초안: 코드 블록을 벗기고, 고정 필드를 덮어쓰고, 날짜·명세 ID를 정리한 뒤 통과한다.
 {
@@ -637,7 +673,7 @@ await assert.rejects(untilRequest({ template: '' }), /Markdown 본문\(content\)
   assert.deepEqual(info.json.attendees, ['A|B', '참석자 2']);
   h.set('녹취 만들기', [{ json: { segmentCount: 4, transcript: TRANSCRIPT } }]);
   h.set('결정 메시지 고르기', [{ json: { decisionCount: 2, decisions: DECISIONS } }]);
-  h.set('템플릿 읽기', [{ json: { content: TEMPLATE } }]);
+  h.set('템플릿 읽기', [{ json: confluencePage(TEMPLATE_STORAGE) }]);
   await h.code('초안 요청 만들기', '템플릿 읽기');
   h.set('초안 작성', [{ json: gptResponse(GOOD_DRAFT) }]);
   const [result] = await h.code('초안 검증', '초안 작성');
@@ -721,16 +757,17 @@ await assert.rejects(check(gptResponse('', { output: [{ type: 'reasoning', id: '
   assert.ok(!result.draft.includes('작성하겠습니다'));
 }
 
-// 노드 설정: 템플릿 읽기(ClickUp v3)와 초안 작성(Anthropic)은 HTTP 노드이고, 합치기 뒤 한 줄로 이어진다.
+// 노드 설정: 템플릿 읽기(Confluence v2)와 초안 작성(OpenAI)은 HTTP 노드이고, 합치기 뒤 한 줄로 이어진다.
 {
   const nodeOf = (name) => workflow.nodes.find((n) => n.name === name);
   const chain = ['녹취·결정 합치기', '템플릿 읽기', '초안 요청 만들기', '초안 작성', '초안 검증', '알림 만들기', '회의 채널 알림'];
   chain.slice(0, -1).forEach((from, i) => assert.deepEqual(workflow.connections[from].main[0], [{ node: chain[i + 1], type: 'main', index: 0 }]));
 
   const page = nodeOf('템플릿 읽기');
-  assert.equal(page.parameters.url, 'https://api.clickup.com/api/v3/workspaces/1100370000016776/docs/z8rzdfhxc8-2398/pages/z8rzdfhxc8-4718');
-  assert.deepEqual(page.parameters.queryParameters.parameters, [{ name: 'content_format', value: 'text/md' }]);
-  assert.equal(page.parameters.nodeCredentialType, 'clickUpApi');
+  assert.equal(page.parameters.url, 'https://tkv123.atlassian.net/wiki/api/v2/pages/294915');
+  assert.deepEqual(page.parameters.queryParameters.parameters, [{ name: 'body-format', value: 'storage' }]);
+  assert.deepEqual([page.parameters.authentication, credentialTypeOf(page)], ['genericCredentialType', 'httpBasicAuth']);
+  assert.equal(page.retryOnFail, true, '읽기라 다시 보낸다');
   assert.equal(page.alwaysOutputData, undefined, '조회 실패를 빈 항목으로 넘기지 않는다');
 
   const draft = nodeOf('초안 작성');
@@ -742,9 +779,9 @@ await assert.rejects(check(gptResponse('', { output: [{ type: 'reasoning', id: '
   assert.equal(draft.alwaysOutputData, undefined);
 
   // E2E는 주소만 가짜 서버로 바꾼다.
-  const local = await buildWorkflow({ openaiBase: 'http://mock/v1', clickupBase: 'http://mock/api/v3' });
+  const local = await buildWorkflow({ openaiBase: 'http://mock/v1', confluenceBase: 'http://mock/wiki/api/v2' });
   assert.equal(local.nodes.find((n) => n.name === '초안 작성').parameters.url, 'http://mock/v1/responses');
-  assert.match(local.nodes.find((n) => n.name === '템플릿 읽기').parameters.url, /^http:\/\/mock\/api\/v3\/workspaces\//);
+  assert.equal(local.nodes.find((n) => n.name === '템플릿 읽기').parameters.url, 'http://mock/wiki/api/v2/pages/294915');
 }
 
 // ---------------------------------------------------------------------------
@@ -853,7 +890,7 @@ const settled = (text) => ({ content: `회의 20261014-1400 회의록 초안: ${
   assert.deepEqual(h.customData(), { meetingId: '20261014-1400', textChannelId: CHANNEL, draftMessageId: MESSAGE_ID });
   assert.deepEqual([approve.outcome, approve.by, approve.rev, approve.textChannelId, approve.messageId], ['approve', '도연', 1, CHANNEL, MESSAGE_ID]);
   assert.deepEqual(approve.response, { result: 'accepted', decision: 'approve' });
-  assert.deepEqual(approve.body, settled('승인(도연). ClickUp에 쓰는 중입니다'));
+  assert.deepEqual(approve.body, settled('승인(도연). Confluence에 쓰는 중입니다'));
   const reject = (await decide(resumed({ decision: 'reject', rev: 1, by: '도연' }))).result;
   assert.deepEqual([reject.outcome, reject.response], ['reject', { result: 'accepted', decision: 'reject' }]);
   assert.deepEqual(reject.body, settled('거절(도연)'));
@@ -891,7 +928,7 @@ for (const rev of [0, 2]) {
   assert.deepEqual(timeout.map((item) => item.json), [{
     textChannelId: CHANNEL,
     body: {
-      content: '회의 20261014-1400 회의록 초안을 3일 동안 아무도 승인하거나 거절하지 않아 ClickUp에 쓰지 않았습니다.',
+      content: '회의 20261014-1400 회의록 초안을 3일 동안 아무도 승인하거나 거절하지 않아 Confluence에 쓰지 않았습니다.',
       message_reference: { message_id: MESSAGE_ID, fail_if_not_exists: false },
       allowed_mentions: { parse: [], replied_user: false },
     },
@@ -952,14 +989,14 @@ await assert.rejects(decide(resumed({ decision: 'edit', rev: 1, by: '민수' }))
 await assert.rejects(decide(resumed({ decision: 'edit', rev: 1, by: '민수', draft: '가'.repeat(4001) })), /비었거나 모달 한도/);
 
 // ---------------------------------------------------------------------------
-// ClickUp 쓰기와 대조(9단계). 페이지 ID와 내용은 지어낸 값이다.
+// Confluence 쓰기와 대조(9단계). 페이지 ID와 내용은 지어낸 값이다.
 // ---------------------------------------------------------------------------
 
-const PARENT = 'z8rzdfhxc8-9001';
-const clickupWorkflow = await buildWorkflow({ minutesParentPage: PARENT });
+const PARENT = '9001';
+const minutesWorkflow = await buildWorkflow({ minutesParentPage: PARENT });
 
 /** 승인된 초안으로 쓰기 준비를 돌린다. */
-async function prepareWrite(draft, { outcome = 'approve', wf = clickupWorkflow, staticData = {} } = {}) {
+async function prepareWrite(draft, { outcome = 'approve', wf = minutesWorkflow, staticData = {} } = {}) {
   const h = harness(staticData, EXECUTION, wf);
   h.set('녹음 정보 확인', [{ json: { meetingId: manifest.meetingId, endedAt: manifest.endedAt } }]);
   h.set('초안 요청 만들기', [{ json: { meetingDate: '2026-10-14' } }]);
@@ -968,110 +1005,95 @@ async function prepareWrite(draft, { outcome = 'approve', wf = clickupWorkflow, 
   return { h, items: await h.code('쓰기 준비', '결과 표시') };
 }
 
-// Markdown 보정: 인용 뒤 빈 줄, 새 번호 목록 앞 빈 줄, ~ 이스케이프, 따옴표 안 굵게를 밖으로, 표 셀 안 굵게 제거. 두 번 적용해도 같다.
+// 쓰기 요청: Qello 스페이스의 `회의록` 아래에 저장 형식으로 만든다. 보낸 Markdown은 대조에 쓰려고 그대로 둔다.
 {
-  const draft = [
-    '> 인용', '다음 줄',
-    '*   항목', '1. 새 목록',
-    '범위 1~3, 이미 \\~ 처리',
-    '**“강조”** 문장',
-    '| **굵게** | 값 |',
-    '본문의 **굵게**는 둔다',
-  ].join('\n');
-  const [prepared] = (await prepareWrite(draft)).items;
-  assert.equal(prepared.json.content, [
-    '> 인용', '', '다음 줄',
-    '*   항목', '', '1. 새 목록',
-    '범위 1\\~3, 이미 \\~ 처리',
-    '“**강조**” 문장',
-    '| 굵게 | 값 |',
-    '본문의 **굵게**는 둔다',
-  ].join('\n'));
-  const [again] = (await prepareWrite(prepared.json.content)).items;
-  assert.equal(again.json.content, prepared.json.content, '여러 번 적용해도 결과가 같다');
+  const [prepared] = (await prepareWrite(GOOD_DRAFT)).items;
   assert.equal(prepared.json.name, '2026-10-14 정기 회의');
-  assert.deepEqual(prepared.json.request, { parent_page_id: PARENT, name: '2026-10-14 정기 회의', content: prepared.json.content, content_format: 'text/md' });
+  assert.equal(prepared.json.content, GOOD_DRAFT);
+  assert.deepEqual(prepared.json.request, {
+    spaceId: '98307',
+    status: 'current',
+    title: '2026-10-14 정기 회의',
+    parentId: PARENT,
+    body: { representation: 'storage', value: markdownToStorage(GOOD_DRAFT) },
+  });
 }
 
 // 승인이 아니면 쓰지 않는다. 상위 페이지 ID가 비어 있으면 아무것도 쓰지 않고 실패한다.
 {
   for (const outcome of ['reject', 'timeout']) assert.deepEqual((await prepareWrite('초안', { outcome })).items, []);
-  await assert.rejects(prepareWrite('초안', { wf: await buildWorkflow({ minutesParentPage: '' }) }), /ClickUp 상위 페이지 ID가 없습니다/);
+  await assert.rejects(prepareWrite('초안', { wf: await buildWorkflow({ minutesParentPage: '' }) }), /Confluence 상위 페이지 ID가 없습니다/);
 }
 
-/** 쓰기 판단: 페이지 목록(트리)의 맨 위 페이지가 항목 하나씩 온다. */
-async function dedupe(listing) {
+/** 쓰기 판단: 같은 제목 찾기(GET /pages?space-id&title) 응답 하나가 온다. */
+async function dedupe(response) {
   const { h } = await prepareWrite(GOOD_DRAFT);
-  h.set('페이지 목록 읽기', listing.length ? listing.map((json) => ({ json })) : [{ json: {} }]);
-  const [result] = await h.code('쓰기 판단', '페이지 목록 읽기');
+  h.set('같은 제목 찾기', [{ json: response }]);
+  const [result] = await h.code('쓰기 판단', '같은 제목 찾기');
   return result.json;
 }
-const tree = (children) => [
-  { id: 'z8rzdfhxc8-1', name: '안내', pages: [] },
-  { id: 'z8rzdfhxc8-38', name: '회의록', pages: [{ id: PARENT, name: '회의록 테스트', parent_page_id: 'z8rzdfhxc8-38', pages: children }] },
-];
 
-// 상위 페이지 아래에 같은 이름이 없으면 쓴다. 다른 상위 페이지 아래의 같은 이름은 상관없다.
+// 스페이스에 같은 제목이 없으면 쓴다. 제목 검색은 정확히 같은 제목만 같은 것으로 본다.
 {
-  const result = await dedupe(tree([{ id: 'p1', name: '2026-10-07 정기 회의' }]));
+  const result = await dedupe({ results: [], _links: {} });
   assert.equal(result.duplicate, false);
-  assert.equal(result.request.parent_page_id, PARENT);
+  assert.equal(result.request.parentId, PARENT);
   assert.equal(result.body, null);
-  const elsewhere = [...tree([]), { id: 'z8rzdfhxc8-50', name: '다른 곳', pages: [{ id: 'p2', name: '2026-10-14 정기 회의' }] }];
-  assert.equal((await dedupe(elsewhere)).duplicate, false);
+  assert.equal((await dedupe({ results: [{ id: 'p1', title: '2026-10-14 정기 회의 (2주차)' }] })).duplicate, false);
 }
 
-// 같은 이름이 있으면 쓰지 않고 초안 메시지에 이유를 적는다.
+// 같은 제목이 있으면(다른 상위 페이지 아래여도) 쓰지 않고 초안 메시지에 이유를 적는다.
 {
-  const result = await dedupe(tree([{ id: 'p1', name: '2026-10-14 정기 회의' }]));
+  const result = await dedupe({ results: [{ id: 'p1', title: '2026-10-14 정기 회의', parentId: '77' }] });
   assert.equal(result.duplicate, true);
   assert.deepEqual([result.textChannelId, result.messageId], [CHANNEL, MESSAGE_ID]);
-  assert.deepEqual(result.body, settled('승인(도연). ClickUp에 같은 이름(2026-10-14 정기 회의)의 페이지가 있어 쓰지 않았습니다'));
+  assert.deepEqual(result.body, settled('승인(도연). Confluence에 같은 제목(2026-10-14 정기 회의)의 페이지가 있어 쓰지 않았습니다'));
 }
 
-// 상위 페이지를 찾지 못하면(ID 설정이 틀림, 목록이 빔) 문서 맨 위에 쓰지 않고 실패한다.
-await assert.rejects(dedupe([{ id: 'z8rzdfhxc8-1', name: '안내' }]), /상위 페이지를 찾지 못했습니다/);
-await assert.rejects(dedupe([]), /상위 페이지를 찾지 못했습니다/);
+// 검색 응답 형식이 다르면 판단할 수 없으므로 쓰지 않고 실패한다.
+await assert.rejects(dedupe({}), /results가 없습니다/);
+await assert.rejects(dedupe({ results: 'x' }), /results가 없습니다/);
 
 /** 내용 대조: 만든 페이지를 다시 읽은 결과로 대조하고 지난 회의 끝 시각을 갱신한다. */
 async function verify(readBack, staticData = {}, { attendees } = {}) {
   const draft = attendees ? GOOD_DRAFT.replace('| 참석자 | 도연 |', attendees) : GOOD_DRAFT;
   const { h, items } = await prepareWrite(draft, { staticData });
   const [prepared] = items;
-  h.set('페이지 만들기', [{ json: { id: 'z8rzdfhxc8-7001', name: prepared.json.name, parent_page_id: PARENT } }]);
-  h.set('페이지 다시 읽기', [{ json: { id: 'z8rzdfhxc8-7001', name: prepared.json.name, parent_page_id: PARENT, ...readBack(prepared.json.content) } }]);
+  h.set('페이지 만들기', [{ json: { id: '7001', title: prepared.json.name, parentId: PARENT } }]);
+  h.set('페이지 다시 읽기', [{ json: { id: '7001', title: prepared.json.name, parentId: PARENT, ...readBack(prepared.json.request.body.value) } }]);
   const [result] = await h.code('내용 대조', '페이지 다시 읽기');
   return result.json;
 }
-const PAGE_LINK = 'https://app.clickup.com/1100370000016776/v/dc/z8rzdfhxc8-98/z8rzdfhxc8-7001';
+const stored = (value) => ({ body: { storage: { representation: 'storage', value } } });
+const PAGE_LINK = 'https://tkv123.atlassian.net/wiki/spaces/SCRUM/pages/7001';
 
-// 공백, 목록 기호, 표 구분선, 역슬래시 이스케이프 차이는 같은 것으로 본다. 쓰고 나면 지난 회의 끝 시각을 이번 회의 종료로 바꾼다.
-// 실제 ClickUp은 링크가 아닌 대괄호를 \[…\]로 바꿔 저장했다(2026-10-11, 참석자 이름의 대괄호).
+// Confluence가 저장하며 붙이는 속성·빈 문단·엔티티 차이는 같은 것으로 본다. 쓰고 나면 지난 회의 끝 시각을 이번 회의 종료로 바꾼다.
 {
   const staticData = { lastMeetingEndedAt: '2026-10-07T06:00:00.000Z' };
-  const result = await verify((content) => ({
-    content: `${content.replace(/^\*   /gm, '- ').replace(/\| ---\| ---\|/g, '|---|---|').replace(/  +/g, ' ')
-      .replace('| 참석자 | 도연, 참석자 2 [15기] |', '| 참석자 | 도연, 참석자 2 \\[15기\\] |')}\n\n`,
-  }), staticData, { attendees: '| 참석자 | 도연, 참석자 2 [15기] |' });
+  const result = await verify((value) => stored(`${value
+    .replace(/<table>/g, '<table data-layout="default" ac:local-id="t1"><colgroup><col /><col /></colgroup>')
+    .replace(/<h2>/g, '<h2 ac:local-id="h">')
+    .replace(/<\/ul>/g, '</ul><p />')
+    .replace(/, /g, '&#44; ')}`), staticData, { attendees: '| 참석자 | 도연, 참석자 2 [15기] |' });
   assert.deepEqual([result.matched, result.differentLines, result.nameOk, result.parentOk], [true, 0, true, true]);
   assert.equal(result.link, PAGE_LINK);
-  assert.deepEqual(result.body, settled(`승인(도연). ClickUp에 썼습니다: ${PAGE_LINK}`));
+  assert.deepEqual(result.body, settled(`승인(도연). Confluence에 썼습니다: ${PAGE_LINK}`));
   assert.equal(staticData.lastMeetingEndedAt, manifest.endedAt);
 }
 
 // 본문 줄이나 제목, 상위 페이지가 다르면 다른 곳을 알린다. 페이지는 이미 있으므로 지난 회의 끝 시각은 갱신한다.
 {
   const staticData = {};
-  const changed = await verify((content) => ({ content: content.replace('배포는 금요일에 한다.', '배포는 토요일에 한다.') }), staticData);
+  const changed = await verify((value) => stored(value.replace('배포는 금요일에 한다.', '배포는 토요일에 한다.')), staticData);
   assert.deepEqual([changed.matched, changed.differentLines], [false, 2]);
-  assert.deepEqual(changed.body, settled(`승인(도연). ClickUp에 썼지만 다시 읽은 내용이 달라 확인이 필요합니다(본문 2줄): ${PAGE_LINK}`));
+  assert.deepEqual(changed.body, settled(`승인(도연). Confluence에 썼지만 다시 읽은 내용이 달라 확인이 필요합니다(본문 2줄): ${PAGE_LINK}`));
   assert.equal(staticData.lastMeetingEndedAt, manifest.endedAt);
-  const moved = await verify(() => ({ name: '다른 제목', parent_page_id: 'z8rzdfhxc8-38', content: '' }));
+  const moved = await verify(() => ({ title: '다른 제목', parentId: '98458', ...stored('') }));
   assert.equal(moved.matched, false);
   assert.match(moved.body.content, /확인이 필요합니다\(제목, 상위 페이지, 본문 \d+줄\)/);
 }
 
-// 노드 설정: 결정 읽기 뒤 갈래와 다시 기다리는 연결, 응답 노드, ClickUp 요청.
+// 노드 설정: 결정 읽기 뒤 갈래와 다시 기다리는 연결, 응답 노드, Confluence 요청.
 {
   const nodeOf = (name) => workflow.nodes.find((n) => n.name === name);
   const link = (node) => ({ node, type: 'main', index: 0 });
@@ -1090,8 +1112,8 @@ const PAGE_LINK = 'https://app.clickup.com/1100370000016776/v/dc/z8rzdfhxc8-98/z
   assert.deepEqual(outputs('수정 반영 만들기'), [[link('수정 반영')]]);
   assert.deepEqual(outputs('수정 반영'), [[link('승인 기다리기')]], '고친 뒤 다시 기다린다');
   assert.deepEqual(outputs('결과 표시'), [[link('쓰기 준비'), link('기한 초과 알림 만들기')]]);
-  assert.deepEqual(outputs('쓰기 준비'), [[link('페이지 목록 읽기')]]);
-  assert.deepEqual(outputs('페이지 목록 읽기'), [[link('쓰기 판단')]]);
+  assert.deepEqual(outputs('쓰기 준비'), [[link('같은 제목 찾기')]]);
+  assert.deepEqual(outputs('같은 제목 찾기'), [[link('쓰기 판단')]]);
   assert.deepEqual(outputs('쓰기 판단'), [[link('같은 이름 확인')]]);
   assert.deepEqual(outputs('같은 이름 확인'), [[link('쓰기 결과 표시')], [link('페이지 만들기')]]);
   assert.deepEqual(outputs('페이지 만들기'), [[link('페이지 다시 읽기')]]);
@@ -1140,20 +1162,28 @@ const PAGE_LINK = 'https://app.clickup.com/1100370000016776/v/dc/z8rzdfhxc8-98/z
   const shortWait = short.nodes.find((n) => n.name === '승인 기다리기').parameters;
   assert.deepEqual([shortWait.resumeAmount, shortWait.resumeUnit], [15, 'seconds']);
 
-  const doc = 'https://api.clickup.com/api/v3/workspaces/1100370000016776/docs/z8rzdfhxc8-98';
-  const listing = nodeOf('페이지 목록 읽기');
-  assert.deepEqual([listing.parameters.method, listing.parameters.url, listing.parameters.nodeCredentialType], ['GET', `${doc}/page_listing`, 'clickUpApi']);
-  assert.deepEqual([listing.alwaysOutputData, listing.retryOnFail], [true, true]);
+  const wiki = 'https://tkv123.atlassian.net/wiki/api/v2';
+  for (const name of ['같은 제목 찾기', '페이지 만들기', '페이지 다시 읽기']) {
+    assert.deepEqual([nodeOf(name).parameters.authentication, credentialTypeOf(nodeOf(name))], ['genericCredentialType', 'httpBasicAuth'], name);
+  }
+  const search = nodeOf('같은 제목 찾기');
+  assert.deepEqual([search.parameters.method, search.parameters.url], ['GET', `${wiki}/pages`]);
+  assert.deepEqual(search.parameters.queryParameters.parameters, [{ name: 'space-id', value: '98307' }, { name: 'title', value: '={{ $json.name }}' }]);
+  assert.deepEqual([search.alwaysOutputData, search.retryOnFail], [undefined, true], '검색 실패를 빈 결과로 넘기지 않는다');
   const create = nodeOf('페이지 만들기');
-  assert.deepEqual([create.parameters.method, create.parameters.url, create.parameters.jsonBody], ['POST', `${doc}/pages`, '={{ JSON.stringify($json.request) }}']);
+  assert.deepEqual([create.parameters.method, create.parameters.url, create.parameters.jsonBody], ['POST', `${wiki}/pages`, '={{ JSON.stringify($json.request) }}']);
   const readBack = nodeOf('페이지 다시 읽기');
-  assert.equal(readBack.parameters.url, `=${doc}/pages/{{ $json.id }}`);
-  assert.deepEqual(readBack.parameters.queryParameters.parameters, [{ name: 'content_format', value: 'text/md' }]);
+  assert.equal(readBack.parameters.url, `=${wiki}/pages/{{ $json.id }}`);
+  assert.deepEqual(readBack.parameters.queryParameters.parameters, [{ name: 'body-format', value: 'storage' }]);
   assert.equal(readBack.retryOnFail, true);
 
-  // 상위 페이지 ID는 빌드 상수(`회의록` 페이지)이고, 빌드 옵션으로 바꿀 수 있다(E2E와 테스트).
-  assert.match(nodeOf('쓰기 준비').parameters.jsCode, /^const CLICKUP = \{"workspaceId":"1100370000016776","docId":"z8rzdfhxc8-98","parentPageId":"z8rzdfhxc8-38"\};/);
-  assert.ok(clickupWorkflow.nodes.find((n) => n.name === '내용 대조').parameters.jsCode.includes(`"parentPageId":"${PARENT}"`));
+  // 사이트·스페이스·상위 페이지 ID는 빌드 상수(`회의록` 페이지)이고, 상위 페이지는 빌드 옵션으로 바꿀 수 있다(E2E와 테스트).
+  const constants = '{"site":"https://tkv123.atlassian.net","spaceId":"98307","spaceKey":"SCRUM","parentPageId":"98458"}';
+  for (const name of ['쓰기 준비', '내용 대조']) assert.ok(nodeOf(name).parameters.jsCode.startsWith(`const CONFLUENCE = ${constants};`), name);
+  assert.ok(minutesWorkflow.nodes.find((n) => n.name === '내용 대조').parameters.jsCode.includes(`"parentPageId":"${PARENT}"`));
+  // 템플릿 읽기·쓰기 준비·내용 대조는 같은 변환 코드(shared/confluence-format.js)를 쓴다.
+  const format = await readFile(new URL('../workflows/src/shared/confluence-format.js', import.meta.url), 'utf8');
+  for (const name of ['초안 요청 만들기', '쓰기 준비', '내용 대조']) assert.ok(nodeOf(name).parameters.jsCode.includes(format), `${name}에 같은 변환 코드가 있다`);
   // 수정 검증과 초안 검증은 같은 규칙 코드(shared/draft-rules.js)를 쓴다.
   const rules = await readFile(new URL('../workflows/src/shared/draft-rules.js', import.meta.url), 'utf8');
   for (const name of ['초안 검증', '결정 읽기']) assert.ok(nodeOf(name).parameters.jsCode.includes(rules), `${name}에 같은 검증 규칙이 있다`);
@@ -1253,19 +1283,19 @@ for (const [trigger, kind] of [
   assert.equal(json.notice.content, '회의 20261014-1400 회의록 처리가 알 수 없는 단계에서 실패했습니다. 오류: 기타 오류. n8n 실행 알 수 없음에서 확인해 주세요.');
 }
 
-// 승인 뒤 페이지 만들기와 그 뒤에서 실패하면 ClickUp 확인을 덧붙이고, 초안 메시지를 실패로 고친다(버튼을 지운다).
+// 승인 뒤 페이지 만들기와 그 뒤에서 실패하면 Confluence 확인을 덧붙이고, 초안 메시지를 실패로 고친다(버튼을 지운다).
 for (const node of ['페이지 만들기', '페이지 다시 읽기', '내용 대조', '쓰기 결과 표시']) {
   const json = await notify(failed({ node, httpCode: '500' }), readOf({ meetingId: '20261014-1400', textChannelId: CHANNEL, draftMessageId: MESSAGE_ID }));
-  const check = ' ClickUp `회의록`에 페이지가 생겼는지 확인해 주세요.';
+  const check = ' Confluence `회의록`에 페이지가 생겼는지 확인해 주세요.';
   assert.equal(json.notice.content, `회의 20261014-1400 회의록 처리가 '${node}' 단계에서 실패했습니다. 오류: 외부 서비스 응답 오류(HTTP 500). n8n 실행 123에서 확인해 주세요.${check}`);
   assert.equal(json.draftMessageId, MESSAGE_ID);
   assert.deepEqual(json.draftEdit, { content: `회의 20261014-1400 회의록 초안: 처리 중 실패했습니다(n8n 실행 123).${check}`, components: [], allowed_mentions: { parse: [] } });
 }
 
-// 승인 뒤라도 페이지 만들기 전(쓰기 판단 등)에 실패하면 ClickUp 확인은 덧붙이지 않는다.
+// 승인 뒤라도 페이지 만들기 전(쓰기 판단 등)에 실패하면 Confluence 확인은 덧붙이지 않는다.
 {
-  const json = await notify(failed({ node: '페이지 목록 읽기', httpCode: '500' }), readOf({ meetingId: '20261014-1400', textChannelId: CHANNEL, draftMessageId: MESSAGE_ID }));
-  assert.ok(!json.notice.content.includes('ClickUp'));
+  const json = await notify(failed({ node: '같은 제목 찾기', httpCode: '500' }), readOf({ meetingId: '20261014-1400', textChannelId: CHANNEL, draftMessageId: MESSAGE_ID }));
+  assert.ok(!json.notice.content.includes('Confluence'));
   assert.equal(json.draftEdit.content, '회의 20261014-1400 회의록 초안: 처리 중 실패했습니다(n8n 실행 123).');
 }
 
